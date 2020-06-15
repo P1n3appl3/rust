@@ -61,6 +61,8 @@ mod config;
 mod core;
 mod docfs;
 mod doctree;
+#[macro_use]
+mod error;
 mod fold;
 pub mod html {
     crate mod escape;
@@ -83,7 +85,7 @@ mod visit_lib;
 
 struct Output {
     krate: clean::Crate,
-    renderinfo: html::render::RenderInfo,
+    renderinfo: config::RenderInfo,
     renderopts: config::RenderOptions,
 }
 
