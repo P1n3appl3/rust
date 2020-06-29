@@ -65,7 +65,7 @@ mod doctree;
 mod error;
 mod fold;
 crate mod formats;
-crate mod html;
+pub mod html;
 mod markdown;
 mod passes;
 mod test;
