@@ -509,11 +509,7 @@ impl Options {
         let output_format = match matches.opt_str("output-format") {
             Some(s) => match OutputFormat::try_from(s.as_str()) {
                 Ok(o) => {
-                    if o.is_json() && !show_coverage {
-                        diag.struct_err("json output format isn't supported for doc generation")
-                            .emit();
-                        return Err(1);
-                    } else if !o.is_json() && show_coverage {
+                    if !o.is_json() && show_coverage {
                         diag.struct_err(
                             "html output format isn't supported for the --show-coverage option",
                         )
@@ -625,7 +621,7 @@ impl Options {
 
 /// Prints deprecation warnings for deprecated options
 fn check_deprecated_options(matches: &getopts::Matches, diag: &rustc_errors::Handler) {
-    let deprecated_flags = ["input-format", "output-format", "no-defaults", "passes"];
+    let deprecated_flags = ["input-format", "no-defaults", "passes"];
 
     for flag in deprecated_flags.iter() {
         if matches.opt_present(flag) {
