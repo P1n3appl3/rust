@@ -1,0 +1,421 @@
+use std::convert::From;
+
+use rustc_ast::ast;
+use rustc_span::def_id;
+
+use crate::clean;
+use crate::doctree;
+use crate::json::types::*;
+
+impl From<clean::Item> for Item {
+    fn from(item: clean::Item) -> Self {
+        let clean::Item {
+            source,
+            name,
+            attrs,
+            inner,
+            visibility,
+            def_id,
+            stability: _,
+            deprecation: _,
+        } = item;
+        Item {
+            id: def_id.into(),
+            name,
+            source: source.into(),
+            visibility: visibility.into(),
+            docs: attrs.collapsed_doc_value(),
+            inner: inner.into(),
+            // stability: stability.map(Into::into),
+            // deprecation: deprecation.map(Into::into),
+        }
+    }
+}
+
+impl From<clean::Span> for Span {
+    fn from(span: clean::Span) -> Self {
+        let clean::Span { loline, locol, hiline, hicol, .. } = span;
+        Span {
+            filename: match span.filename {
+                rustc_span::FileName::Real(name) => Some(match name {
+                    rustc_span::RealFileName::Named(path) => path,
+                    rustc_span::RealFileName::Devirtualized { local_path, virtual_name: _ } => {
+                        local_path
+                    }
+                }),
+                _ => None,
+            },
+            begin: (loline, locol),
+            end: (hiline, hicol),
+        }
+    }
+}
+
+impl From<clean::Visibility> for Visibility {
+    fn from(v: clean::Visibility) -> Self {
+        use clean::Visibility::*;
+        match v {
+            Public => Visibility::Public,
+            Inherited => Visibility::Inherited,
+            Crate => Visibility::Crate,
+            Restricted(did, path) => Visibility::Restricted(did.into(), path.into()),
+        }
+    }
+}
+
+impl From<clean::Path> for Path {
+    fn from(path: clean::Path) -> Self {
+        Path { global: path.global, segments: path.segments.into_iter().map(Into::into).collect() }
+    }
+}
+
+impl From<clean::PathSegment> for PathSegment {
+    fn from(segment: clean::PathSegment) -> Self {
+        PathSegment { name: segment.name, args: segment.args.into() }
+    }
+}
+
+impl From<clean::GenericArgs> for GenericArgs {
+    fn from(args: clean::GenericArgs) -> Self {
+        use clean::GenericArgs::*;
+        match args {
+            AngleBracketed { args, bindings } => GenericArgs::AngleBracketed {
+                args: args.into_iter().map(Into::into).collect(),
+                bindings: bindings.into_iter().map(Into::into).collect(),
+            },
+            Parenthesized { inputs, output } => GenericArgs::Parenthesized {
+                inputs: inputs.into_iter().map(Into::into).collect(),
+                output: output.map(Into::into),
+            },
+        }
+    }
+}
+
+impl From<clean::GenericArg> for GenericArg {
+    fn from(arg: clean::GenericArg) -> Self {
+        use clean::GenericArg::*;
+        match arg {
+            Lifetime(l) => GenericArg::Lifetime(l.0),
+            Type(t) => GenericArg::Type(t.into()),
+            Const(c) => GenericArg::Const(c.into()),
+        }
+    }
+}
+
+impl From<clean::Constant> for Constant {
+    fn from(constant: clean::Constant) -> Self {
+        let clean::Constant { type_, expr, value, is_literal } = constant;
+        Constant { type_: type_.into(), expr, value, is_literal }
+    }
+}
+
+impl From<clean::TypeBinding> for TypeBinding {
+    fn from(binding: clean::TypeBinding) -> Self {
+        TypeBinding { name: binding.name, kind: binding.kind.into() }
+    }
+}
+
+impl From<clean::TypeBindingKind> for TypeBindingKind {
+    fn from(kind: clean::TypeBindingKind) -> Self {
+        use clean::TypeBindingKind::*;
+        match kind {
+            Equality { ty } => TypeBindingKind::Equality(ty.into()),
+            Constraint { bounds } => {
+                TypeBindingKind::Constraint(bounds.into_iter().map(Into::into).collect())
+            }
+        }
+    }
+}
+
+impl From<def_id::DefId> for DefId {
+    fn from(did: def_id::DefId) -> Self {
+        DefId(
+            match did.krate {
+                def_id::CrateNum::Index(n) => n.as_u32(),
+                _ => panic!(),
+            },
+            did.index.into(),
+        )
+    }
+}
+
+impl From<clean::Stability> for Stability {
+    fn from(s: clean::Stability) -> Self {
+        let clean::Stability { level, feature, since, deprecation, unstable_reason, issue } = s;
+        Stability {
+            stable: level == rustc_middle::middle::stability::Stable,
+            feature,
+            since,
+            deprecation: deprecation.map(Into::into),
+            unstable_reason,
+            issue,
+        }
+    }
+}
+
+impl From<clean::Deprecation> for Deprecation {
+    fn from(deprecation: clean::Deprecation) -> Self {
+        Deprecation { since: deprecation.since, note: deprecation.note }
+    }
+}
+
+impl From<clean::ItemEnum> for ItemEnum {
+    fn from(item: clean::ItemEnum) -> Self {
+        use clean::ItemEnum::*;
+        match item {
+            ModuleItem(m) => ItemEnum::ModuleItem(m.into()),
+            PrimitiveItem(p) => ItemEnum::PrimitiveItem(p.into()),
+            StructItem(s) => ItemEnum::StructItem(s.into()),
+            FunctionItem(f) => ItemEnum::FunctionItem(f.into()),
+            _ => unimplemented!(),
+        }
+    }
+}
+
+impl From<clean::Module> for Module {
+    fn from(module: clean::Module) -> Self {
+        Module {
+            is_crate: module.is_crate,
+            items: module.items.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<clean::Struct> for Struct {
+    fn from(struct_: clean::Struct) -> Self {
+        let clean::Struct { struct_type, generics, fields, fields_stripped } = struct_;
+        Struct {
+            struct_type: struct_type.into(),
+            generics: generics.into(),
+            fields_stripped,
+            fields: fields.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<doctree::StructType> for StructType {
+    fn from(struct_type: doctree::StructType) -> Self {
+        use doctree::StructType::*;
+        match struct_type {
+            Plain => StructType::Plain,
+            Tuple => StructType::Tuple,
+            Unit => StructType::Unit,
+        }
+    }
+}
+
+impl From<clean::Function> for Function {
+    fn from(function: clean::Function) -> Self {
+        let clean::Function { decl, generics, header, all_types: _, ret_types: _ } = function;
+        Function { decl: decl.into(), generics: generics.into(), header: header.into() }
+    }
+}
+
+impl From<rustc_hir::FnHeader> for FnHeader {
+    fn from(header: rustc_hir::FnHeader) -> Self {
+        FnHeader {
+            is_unsafe: header.unsafety == rustc_hir::Unsafety::Unsafe,
+            is_const: header.constness == rustc_hir::Constness::Const,
+            is_async: header.asyncness == rustc_hir::IsAsync::Async,
+            abi: header.abi.to_string(),
+        }
+    }
+}
+
+impl From<clean::Generics> for Generics {
+    fn from(generics: clean::Generics) -> Self {
+        Generics {
+            params: generics.params.into_iter().map(Into::into).collect(),
+            where_predicates: generics.where_predicates.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<clean::GenericParamDef> for GenericParamDef {
+    fn from(generic_param: clean::GenericParamDef) -> Self {
+        GenericParamDef { name: generic_param.name, kind: generic_param.kind.into() }
+    }
+}
+
+impl From<clean::GenericParamDefKind> for GenericParamDefKind {
+    fn from(kind: clean::GenericParamDefKind) -> Self {
+        use clean::GenericParamDefKind::*;
+        match kind {
+            Lifetime => GenericParamDefKind::Lifetime,
+            Type { did, bounds, default, synthetic: _ } => GenericParamDefKind::Type {
+                did: did.into(),
+                bounds: bounds.into_iter().map(Into::into).collect(),
+                default: default.map(Into::into),
+            },
+            Const { did, ty } => GenericParamDefKind::Const { did: did.into(), ty: ty.into() },
+        }
+    }
+}
+
+impl From<clean::WherePredicate> for WherePredicate {
+    fn from(predicate: clean::WherePredicate) -> Self {
+        use clean::WherePredicate::*;
+        match predicate {
+            BoundPredicate { ty, bounds } => WherePredicate::BoundPredicate {
+                ty: ty.into(),
+                bounds: bounds.into_iter().map(Into::into).collect(),
+            },
+            RegionPredicate { lifetime, bounds } => WherePredicate::RegionPredicate {
+                lifetime: lifetime.0,
+                bounds: bounds.into_iter().map(Into::into).collect(),
+            },
+            EqPredicate { lhs, rhs } => {
+                WherePredicate::EqPredicate { lhs: lhs.into(), rhs: rhs.into() }
+            }
+        }
+    }
+}
+
+impl From<clean::GenericBound> for GenericBound {
+    fn from(bound: clean::GenericBound) -> Self {
+        use clean::GenericBound::*;
+        match bound {
+            TraitBound(poly, modifier) => GenericBound::TraitBound(poly.into(), modifier.into()),
+            Outlives(lifetime) => GenericBound::Outlives(lifetime.0),
+        }
+    }
+}
+
+impl From<clean::PolyTrait> for PolyTrait {
+    fn from(poly_trait: clean::PolyTrait) -> Self {
+        PolyTrait {
+            trait_: poly_trait.trait_.into(),
+            generic_params: poly_trait.generic_params.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<rustc_hir::TraitBoundModifier> for TraitBoundModifier {
+    fn from(modifier: rustc_hir::TraitBoundModifier) -> Self {
+        use rustc_hir::TraitBoundModifier::*;
+        match modifier {
+            None => TraitBoundModifier::None,
+            Maybe => TraitBoundModifier::Maybe,
+            MaybeConst => TraitBoundModifier::MaybeConst,
+        }
+    }
+}
+
+impl From<clean::PrimitiveType> for PrimitiveType {
+    fn from(ty: clean::PrimitiveType) -> Self {
+        use clean::PrimitiveType::*;
+        match ty {
+            Isize => PrimitiveType::Isize,
+            I8 => PrimitiveType::I8,
+            I16 => PrimitiveType::I16,
+            I32 => PrimitiveType::I32,
+            I64 => PrimitiveType::I64,
+            I128 => PrimitiveType::I128,
+            Usize => PrimitiveType::Usize,
+            U8 => PrimitiveType::U8,
+            U16 => PrimitiveType::U16,
+            U32 => PrimitiveType::U32,
+            U64 => PrimitiveType::U64,
+            U128 => PrimitiveType::U128,
+            F32 => PrimitiveType::F32,
+            F64 => PrimitiveType::F64,
+            Char => PrimitiveType::Char,
+            Bool => PrimitiveType::Bool,
+            Str => PrimitiveType::Str,
+            Slice => PrimitiveType::Slice,
+            Array => PrimitiveType::Array,
+            Tuple => PrimitiveType::Tuple,
+            Unit => PrimitiveType::Unit,
+            RawPointer => PrimitiveType::RawPointer,
+            Reference => PrimitiveType::Reference,
+            Fn => PrimitiveType::Fn,
+            Never => PrimitiveType::Never,
+        }
+    }
+}
+
+impl From<clean::Type> for Type {
+    fn from(ty: clean::Type) -> Self {
+        use clean::Type::*;
+        match ty {
+            ResolvedPath { path, param_names, did, is_generic } => Type::ResolvedPath {
+                path: path.into(),
+                param_names: param_names.map(|v| v.into_iter().map(Into::into).collect()),
+                did: did.into(),
+                is_generic,
+            },
+            Generic(s) => Type::Generic(s),
+            Primitive(p) => Type::Primitive(p.into()),
+            // TODO: check if there's a more idiomatic way of calling `into` on Box<T>
+            BareFunction(f) => Type::BareFunction(Box::new((*f).into())),
+            Tuple(t) => Type::Tuple(t.into_iter().map(Into::into).collect()),
+            Slice(t) => Type::Slice(Box::new((*t).into())),
+            Array(t, s) => Type::Array(Box::new((*t).into()), s),
+            ImplTrait(g) => Type::ImplTrait(g.into_iter().map(Into::into).collect()),
+            Never => Type::Never,
+            Infer => Type::Infer,
+            RawPointer(mutability, type_) => Type::RawPointer {
+                mutable: mutability == ast::Mutability::Mut,
+                type_: Box::new((*type_).into()),
+            },
+            BorrowedRef { lifetime, mutability, type_ } => Type::BorrowedRef {
+                lifetime: lifetime.map(|l| l.0),
+                mutable: mutability == ast::Mutability::Mut,
+                type_: Box::new((*type_).into()),
+            },
+            QPath { name, self_type, trait_ } => Type::QPath {
+                name,
+                self_type: Box::new((*self_type).into()),
+                trait_: Box::new((*trait_).into()),
+            },
+        }
+    }
+}
+
+impl From<clean::BareFunctionDecl> for BareFunctionDecl {
+    fn from(bare_decl: clean::BareFunctionDecl) -> Self {
+        let clean::BareFunctionDecl { unsafety, generic_params, decl, abi } = bare_decl;
+        BareFunctionDecl {
+            unsafe_: unsafety == rustc_hir::Unsafety::Unsafe,
+            generic_params: generic_params.into_iter().map(Into::into).collect(),
+            decl: decl.into(),
+            abi: abi.to_string(),
+        }
+    }
+}
+
+impl From<clean::FnDecl> for FnDecl {
+    fn from(decl: clean::FnDecl) -> Self {
+        let clean::FnDecl { inputs, output, c_variadic, attrs: _ } = decl;
+        FnDecl {
+            inputs: inputs.values.into_iter().map(|arg| (arg.name, arg.type_.into())).collect(),
+            output: match output {
+                clean::FnRetTy::Return(t) => Some(t.into()),
+                clean::FnRetTy::DefaultReturn => None,
+            },
+            c_variadic,
+        }
+    }
+}
+
+impl From<clean::TypeKind> for TypeKind {
+    fn from(kind: clean::TypeKind) -> Self {
+        use clean::TypeKind::*;
+        match kind {
+            Enum => TypeKind::Enum,
+            Function => TypeKind::Function,
+            Module => TypeKind::Module,
+            Const => TypeKind::Const,
+            Static => TypeKind::Static,
+            Struct => TypeKind::Struct,
+            Union => TypeKind::Union,
+            Trait => TypeKind::Trait,
+            Typedef => TypeKind::Typedef,
+            Foreign => TypeKind::Foreign,
+            Macro => TypeKind::Macro,
+            Attr => TypeKind::Attr,
+            Derive => TypeKind::Derive,
+            TraitAlias => TypeKind::TraitAlias,
+        }
+    }
+}
