@@ -1,22 +1,36 @@
 use std::num::NonZeroU32;
 use std::path::PathBuf;
 
+use rustc_data_structures::fx::FxHashMap;
 use serde::Serialize;
 
 #[derive(Clone, Debug, Serialize)]
+pub struct Crate {
+    pub root: Id,
+    pub version: Option<String>,
+    pub includes_private: bool,
+    pub index: FxHashMap<Id, Item>,
+    pub type_to_trait_impls: FxHashMap<Id, Vec<Id>>,
+    pub trait_to_implementors: FxHashMap<Id, Vec<Id>>,
+    /// Maps `crate_num` of items to crate names and html_root_url if it exists
+    pub extern_crates: FxHashMap<u32, (String, Option<String>)>,
+}
+
+#[derive(Clone, Debug, Serialize)]
 pub struct Item {
-    pub id: DefId,
+    pub id: Id,
+    pub crate_num: u32,
     pub name: Option<String>,
     pub source: Span,
     pub visibility: Visibility,
     pub docs: Option<String>,
+    pub kind: ItemKind,
+    pub inner: ItemEnum,
     // TODO: the `Attributes` struct defers to compiler internal symbols. seems like it would be
     // hard to expose arbitrary ones so we should either special case things like `cfg` that matter
-    // for docs or just stringify all non-doc attributes to let the user deal with them as they
-    // please
+    // for docs or just stringify all non-doc attributes to let the user deal with them
     // pub attrs: Attributes,
-    pub inner: ItemEnum,
-    // TODO: should we support this if it's only used by `std`
+    // TODO: should we support this if it's only used by `std`?
     // pub stability: Option<Stability>,
     // TODO: why is this necessary when stability contains one?
     // pub deprecation: Option<Deprecation>,
@@ -31,61 +45,66 @@ pub struct Span {
     pub end: (usize, usize),
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, Serialize)]
 pub enum Visibility {
     Public,
     Inherited,
     Crate,
-    Restricted(DefId, Path),
+    Restricted(Id, Path),
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Hash, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Path {
     pub global: bool,
     pub segments: Vec<PathSegment>,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Hash, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct PathSegment {
     pub name: String,
     pub args: GenericArgs,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, Serialize)]
 pub enum GenericArgs {
     AngleBracketed { args: Vec<GenericArg>, bindings: Vec<TypeBinding> },
     Parenthesized { inputs: Vec<Type>, output: Option<Type> },
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, Serialize)]
 pub enum GenericArg {
     Lifetime(String),
     Type(Type),
     Const(Constant),
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct Constant {
+    #[serde(rename = "type")]
     pub type_: Type,
     pub expr: String,
     pub value: Option<String>,
     pub is_literal: bool,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Hash, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct TypeBinding {
     pub name: String,
     pub kind: TypeBindingKind,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, Serialize)]
 pub enum TypeBindingKind {
     Equality(Type),
     Constraint(Vec<GenericBound>),
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, PartialOrd, Ord, Hash, Copy, Serialize)]
-pub struct DefId(pub u32, pub u32);
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
+pub struct Id(pub String);
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Stability {
@@ -103,50 +122,80 @@ pub struct Deprecation {
     pub note: Option<String>,
 }
 
+#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, Serialize)]
+pub enum ItemKind {
+    Module,
+    ExternCrate,
+    Import,
+    Struct,
+    StructField,
+    Enum,
+    Variant,
+    Function,
+    ForeignFunction,
+    Typedef,
+    OpaqueTy,
+    Constant,
+    Trait,
+    TraitAlias,
+    Method,
+    Impl,
+    Static,
+    ForeignStatic,
+    ForeignType,
+    Macro,
+    ProcMacro,
+    AssocConst,
+    AssocType,
+    Stripped,
+}
+
+#[serde(rename_all = "snake_case")]
 #[derive(Clone, Debug, Serialize)]
 pub enum ItemEnum {
     ModuleItem(Module),
-    PrimitiveItem(PrimitiveType),
-    StructItem(Struct),
-    FunctionItem(Function),
-    // EnumItem(Enum),
-    // TypedefItem(Typedef, bool /* is associated type */),
-    // ConstantItem(Constant),
-    // TraitItem(Trait),
-    // ImplItem(Impl),
-    // /// A method signature only. Used for required methods in traits (ie,
-    // /// non-default-methods).
-    // TyMethodItem(TyMethod),
-    // /// A method with a body.
-    // MethodItem(Method),
-    // StructFieldItem(Type),
-    // VariantItem(Variant),
-    // KeywordItem(String),
+    ExternCrateItem(String, Option<String>),
+    ImportItem(Import),
 
-    // ExternCrateItem(String, Option<String>),
-    // ImportItem(Import),
-    // UnionItem(Union),
-    // OpaqueTyItem(OpaqueTy, bool /* is associated type */),
-    // StaticItem(Static),
-    // TraitAliasItem(TraitAlias),
-    // /// `fn`s from an extern block
-    // ForeignFunctionItem(Function),
-    // /// `static`s from an extern block
-    // ForeignStaticItem(Static),
-    // /// `type`s from an extern block
-    // ForeignTypeItem,
-    // MacroItem(Macro),
-    // ProcMacroItem(ProcMacro),
-    // AssocConstItem(Type, Option<String>),
-    // AssocTypeItem(Vec<GenericBound>, Option<Type>),
-    // /// An item that has been stripped by a rustdoc pass
-    // StrippedItem(Box<ItemEnum>),
+    StructItem(Struct),
+    StructFieldItem(Type),
+    EnumItem(Enum),
+    VariantItem(Variant),
+
+    FunctionItem(Function),
+    /// `fn`s from an extern block
+    ForeignFunctionItem(Function),
+
+    TypedefItem(Typedef, bool /* is associated type */),
+    OpaqueTyItem(OpaqueTy, bool /* is associated type */),
+    ConstantItem(Constant),
+
+    TraitItem(Trait),
+    TraitAliasItem(TraitAlias),
+    MethodItem(Method),
+    ImplItem(Impl),
+
+    StaticItem(Static),
+    /// `static`s from an extern block
+    ForeignStaticItem(Static),
+    /// `type`s from an extern block
+    ForeignTypeItem,
+
+    MacroItem(Macro),
+    ProcMacroItem(ProcMacro),
+
+    AssocConstItem(Type, Option<String>),
+    AssocTypeItem(Vec<GenericBound>, Option<Type>),
+
+    /// An item that has been stripped by a rustdoc pass
+    StrippedItem(Box<ItemEnum>),
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Module {
     pub is_crate: bool,
-    pub items: Vec<Item>,
+    pub items: Vec<Id>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -157,7 +206,23 @@ pub struct Struct {
     pub fields: Vec<Item>,
 }
 
-#[derive(Debug, Clone, Copy, Serialize)]
+#[derive(Clone, Debug, Serialize)]
+pub struct Enum {
+    pub generics: Generics,
+    pub variants_stripped: bool,
+    pub variants: Vec<Item>,
+}
+
+#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, Serialize)]
+pub enum Variant {
+    Plain,
+    Tuple(Vec<Type>),
+    Struct(Struct),
+}
+
+#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, Serialize)]
 pub enum StructType {
     Plain,
     Tuple,
@@ -169,6 +234,14 @@ pub struct Function {
     pub decl: FnDecl,
     pub generics: Generics,
     pub header: FnHeader,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Method {
+    pub header: FnHeader,
+    pub decl: FnDecl,
+    pub generics: Generics,
+    pub has_body: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -185,27 +258,29 @@ pub struct Generics {
     pub where_predicates: Vec<WherePredicate>,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Hash, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct GenericParamDef {
     pub name: String,
     pub kind: GenericParamDefKind,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, Serialize)]
 pub enum GenericParamDefKind {
     Lifetime,
     Type {
-        did: DefId,
+        id: Id,
         bounds: Vec<GenericBound>,
         default: Option<Type>,
         // synthetic: bool, // TODO: check if necessary
     },
     Const {
-        did: DefId,
+        id: Id,
         ty: Type,
     },
 }
 
+#[serde(rename_all = "snake_case")]
 #[derive(Clone, Debug, Serialize)]
 pub enum WherePredicate {
     BoundPredicate { ty: Type, bounds: Vec<GenericBound> },
@@ -213,26 +288,30 @@ pub enum WherePredicate {
     EqPredicate { lhs: Type, rhs: Type },
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, Serialize)]
 pub enum GenericBound {
     TraitBound(PolyTrait, TraitBoundModifier),
     Outlives(String),
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Hash, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct PolyTrait {
+    #[serde(rename = "trait")]
     pub trait_: Type,
     pub generic_params: Vec<GenericParamDef>,
 }
 
-#[derive(Copy, Clone, PartialEq, Eq, Hash, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, Serialize)]
 pub enum TraitBoundModifier {
     None,
     Maybe,
     MaybeConst,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Copy, Debug, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, Serialize)]
 pub enum PrimitiveType {
     Isize,
     I8,
@@ -261,13 +340,14 @@ pub enum PrimitiveType {
     Never,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Hash, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, Serialize)]
 pub enum Type {
     /// Structs/enums/traits (most that would be an `hir::TyKind::Path`).
     ResolvedPath {
         path: Path,
         param_names: Option<Vec<GenericBound>>,
-        did: DefId,
+        id: Id,
         /// `true` if is a `T::Name` path for associated types.
         is_generic: bool,
     },
@@ -281,56 +361,133 @@ pub enum Type {
     BareFunction(Box<BareFunctionDecl>),
     Tuple(Vec<Type>),
     Slice(Box<Type>),
+    // Second field is stringified length
     Array(Box<Type>, String),
     ImplTrait(Vec<GenericBound>), // `impl TraitA + TraitB + ...`
     Never,
     Infer, // `_`
     RawPointer {
         mutable: bool,
+        #[serde(rename = "type")]
         type_: Box<Type>,
     },
     BorrowedRef {
         lifetime: Option<String>,
         mutable: bool,
+        #[serde(rename = "type")]
         type_: Box<Type>,
     },
     // `<Type as Trait>::Name`
     QPath {
         name: String,
         self_type: Box<Type>,
+        #[serde(rename = "trait")]
         trait_: Box<Type>,
     },
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Hash, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct BareFunctionDecl {
-    pub unsafe_: bool,
+    pub is_unsafe: bool,
     pub generic_params: Vec<GenericParamDef>,
     pub decl: FnDecl,
     pub abi: String,
 }
 
-#[derive(Clone, PartialEq, Eq, Debug, Hash, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 pub struct FnDecl {
     pub inputs: Vec<(String, Type)>,
     pub output: Option<Type>,
     pub c_variadic: bool,
 }
 
-#[derive(Clone, PartialEq, Eq, Hash, Copy, Debug, Serialize)]
-pub enum TypeKind {
-    Enum,
-    Function,
-    Module,
-    Const,
-    Static,
-    Struct,
-    Union,
-    Trait,
-    Typedef,
-    Foreign,
-    Macro,
+#[derive(Clone, Debug, Serialize)]
+pub struct Trait {
+    pub is_auto: bool,
+    pub is_unsafe: bool,
+    pub items: Vec<Item>,
+    pub generics: Generics,
+    pub bounds: Vec<GenericBound>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct TraitAlias {
+    pub generics: Generics,
+    pub bounds: Vec<GenericBound>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Impl {
+    pub is_unsafe: bool,
+    pub generics: Generics,
+    pub provided_trait_methods: Vec<String>,
+    #[serde(rename = "trait")]
+    pub trait_: Option<Type>,
+    #[serde(rename = "for")]
+    pub for_: Type,
+    pub items: Vec<Item>,
+    pub negative: bool,
+    pub synthetic: bool,
+    pub blanket_impl: Option<Type>,
+}
+
+#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, Serialize)]
+pub enum Import {
+    // use source as str;
+    Simple(String, ImportSource),
+    // use source::*;
+    Glob(ImportSource),
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ImportSource {
+    pub path: Path,
+    pub id: Option<Id>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Macro {
+    pub source: String,
+    pub imported_from: Option<String>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct ProcMacro {
+    pub kind: MacroKind,
+    pub helpers: Vec<String>,
+}
+
+#[serde(rename_all = "snake_case")]
+#[derive(Clone, Debug, Serialize)]
+pub enum MacroKind {
+    /// A bang macro `foo!()`.
+    Bang,
+    /// An attribute macro `#[foo]`.
     Attr,
+    /// A derive macro `#[derive(Foo)]`
     Derive,
-    TraitAlias,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Typedef {
+    #[serde(rename = "type")]
+    pub type_: Type,
+    pub generics: Generics,
+    // Type of target item.
+    pub item_type: Option<Type>,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct OpaqueTy {
+    pub bounds: Vec<GenericBound>,
+    pub generics: Generics,
+}
+
+#[derive(Clone, Debug, Serialize)]
+pub struct Static {
+    #[serde(rename = "type")]
+    pub type_: Type,
+    pub mutable: bool,
+    pub expr: String,
 }

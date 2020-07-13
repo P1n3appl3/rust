@@ -9,6 +9,7 @@ use crate::json::types::*;
 
 impl From<clean::Item> for Item {
     fn from(item: clean::Item) -> Self {
+        use clean::ItemEnum::*;
         let clean::Item {
             source,
             name,
@@ -21,11 +22,40 @@ impl From<clean::Item> for Item {
         } = item;
         Item {
             id: def_id.into(),
+            crate_num: def_id.krate.as_u32(),
             name,
             source: source.into(),
             visibility: visibility.into(),
             docs: attrs.collapsed_doc_value(),
+            kind: match &inner {
+                ModuleItem(_) => ItemKind::Module,
+                ExternCrateItem(_, _) => ItemKind::ExternCrate,
+                ImportItem(_) => ItemKind::Import,
+                StructItem(_) => ItemKind::Struct,
+                StructFieldItem(_) => ItemKind::StructField,
+                EnumItem(_) => ItemKind::Enum,
+                VariantItem(_) => ItemKind::Variant,
+                FunctionItem(_) => ItemKind::Function,
+                ForeignFunctionItem(_) => ItemKind::ForeignFunction,
+                TraitItem(_) => ItemKind::Trait,
+                TraitAliasItem(_) => ItemKind::TraitAlias,
+                MethodItem(_) => ItemKind::Method,
+                ImplItem(_) => ItemKind::Impl,
+                StaticItem(_) => ItemKind::Static,
+                ForeignStaticItem(_) => ItemKind::ForeignStatic,
+                ForeignTypeItem => ItemKind::ForeignType,
+                TypedefItem(_, _) => ItemKind::Typedef,
+                OpaqueTyItem(_, _) => ItemKind::OpaqueTy,
+                ConstantItem(_) => ItemKind::Constant,
+                MacroItem(_) => ItemKind::Macro,
+                ProcMacroItem(_) => ItemKind::ProcMacro,
+                AssocConstItem(_, _) => ItemKind::AssocConst,
+                AssocTypeItem(_, _) => ItemKind::AssocType,
+                StrippedItem(_) => ItemKind::Stripped,
+                _ => unimplemented!(),
+            },
             inner: inner.into(),
+            // attrs: unimplemented!(),
             // stability: stability.map(Into::into),
             // deprecation: deprecation.map(Into::into),
         }
@@ -127,15 +157,9 @@ impl From<clean::TypeBindingKind> for TypeBindingKind {
     }
 }
 
-impl From<def_id::DefId> for DefId {
+impl From<def_id::DefId> for Id {
     fn from(did: def_id::DefId) -> Self {
-        DefId(
-            match did.krate {
-                def_id::CrateNum::Index(n) => n.as_u32(),
-                _ => panic!(),
-            },
-            did.index.into(),
-        )
+        Id(format!("{}:{}", did.krate.as_u32(), u32::from(did.index)))
     }
 }
 
@@ -164,10 +188,32 @@ impl From<clean::ItemEnum> for ItemEnum {
         use clean::ItemEnum::*;
         match item {
             ModuleItem(m) => ItemEnum::ModuleItem(m.into()),
-            PrimitiveItem(p) => ItemEnum::PrimitiveItem(p.into()),
+            ExternCrateItem(c, a) => ItemEnum::ExternCrateItem(c, a),
+            ImportItem(i) => ItemEnum::ImportItem(i.into()),
             StructItem(s) => ItemEnum::StructItem(s.into()),
+            StructFieldItem(f) => ItemEnum::StructFieldItem(f.into()),
+            EnumItem(e) => ItemEnum::EnumItem(e.into()),
+            VariantItem(v) => ItemEnum::VariantItem(v.into()),
             FunctionItem(f) => ItemEnum::FunctionItem(f.into()),
-            _ => unimplemented!(),
+            ForeignFunctionItem(f) => ItemEnum::ForeignFunctionItem(f.into()),
+            TraitItem(t) => ItemEnum::TraitItem(t.into()),
+            TraitAliasItem(t) => ItemEnum::TraitAliasItem(t.into()),
+            MethodItem(m) => ItemEnum::MethodItem(m.into()),
+            ImplItem(i) => ItemEnum::ImplItem(i.into()),
+            StaticItem(s) => ItemEnum::StaticItem(s.into()),
+            ForeignStaticItem(s) => ItemEnum::ForeignStaticItem(s.into()),
+            ForeignTypeItem => ItemEnum::ForeignTypeItem,
+            TypedefItem(t, b) => ItemEnum::TypedefItem(t.into(), b),
+            OpaqueTyItem(t, b) => ItemEnum::OpaqueTyItem(t.into(), b),
+            ConstantItem(c) => ItemEnum::ConstantItem(c.into()),
+            MacroItem(m) => ItemEnum::MacroItem(m.into()),
+            ProcMacroItem(m) => ItemEnum::ProcMacroItem(m.into()),
+            AssocConstItem(t, s) => ItemEnum::AssocConstItem(t.into(), s),
+            AssocTypeItem(g, t) => {
+                ItemEnum::AssocTypeItem(g.into_iter().map(Into::into).collect(), t.map(Into::into))
+            }
+            StrippedItem(inner) => ItemEnum::StrippedItem(Box::new((*inner).into())),
+            _ => panic!("{:?} is not supported for JSON output", item),
         }
     }
 }
@@ -176,7 +222,7 @@ impl From<clean::Module> for Module {
     fn from(module: clean::Module) -> Self {
         Module {
             is_crate: module.is_crate,
-            items: module.items.into_iter().map(Into::into).collect(),
+            items: module.items.into_iter().map(|i| i.def_id.into()).collect(),
         }
     }
 }
@@ -184,6 +230,18 @@ impl From<clean::Module> for Module {
 impl From<clean::Struct> for Struct {
     fn from(struct_: clean::Struct) -> Self {
         let clean::Struct { struct_type, generics, fields, fields_stripped } = struct_;
+        Struct {
+            struct_type: struct_type.into(),
+            generics: generics.into(),
+            fields_stripped,
+            fields: fields.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<clean::Union> for Struct {
+    fn from(struct_: clean::Union) -> Self {
+        let clean::Union { struct_type, generics, fields, fields_stripped } = struct_;
         Struct {
             struct_type: struct_type.into(),
             generics: generics.into(),
@@ -243,11 +301,11 @@ impl From<clean::GenericParamDefKind> for GenericParamDefKind {
         match kind {
             Lifetime => GenericParamDefKind::Lifetime,
             Type { did, bounds, default, synthetic: _ } => GenericParamDefKind::Type {
-                did: did.into(),
+                id: did.into(),
                 bounds: bounds.into_iter().map(Into::into).collect(),
                 default: default.map(Into::into),
             },
-            Const { did, ty } => GenericParamDefKind::Const { did: did.into(), ty: ty.into() },
+            Const { did, ty } => GenericParamDefKind::Const { id: did.into(), ty: ty.into() },
         }
     }
 }
@@ -341,7 +399,7 @@ impl From<clean::Type> for Type {
             ResolvedPath { path, param_names, did, is_generic } => Type::ResolvedPath {
                 path: path.into(),
                 param_names: param_names.map(|v| v.into_iter().map(Into::into).collect()),
-                did: did.into(),
+                id: did.into(),
                 is_generic,
             },
             Generic(s) => Type::Generic(s),
@@ -376,7 +434,7 @@ impl From<clean::BareFunctionDecl> for BareFunctionDecl {
     fn from(bare_decl: clean::BareFunctionDecl) -> Self {
         let clean::BareFunctionDecl { unsafety, generic_params, decl, abi } = bare_decl;
         BareFunctionDecl {
-            unsafe_: unsafety == rustc_hir::Unsafety::Unsafe,
+            is_unsafe: unsafety == rustc_hir::Unsafety::Unsafe,
             generic_params: generic_params.into_iter().map(Into::into).collect(),
             decl: decl.into(),
             abi: abi.to_string(),
@@ -398,24 +456,179 @@ impl From<clean::FnDecl> for FnDecl {
     }
 }
 
-impl From<clean::TypeKind> for TypeKind {
-    fn from(kind: clean::TypeKind) -> Self {
-        use clean::TypeKind::*;
+impl From<clean::Trait> for Trait {
+    fn from(trait_: clean::Trait) -> Self {
+        let clean::Trait { auto, unsafety, items, generics, bounds, is_auto: _ } = trait_;
+        Trait {
+            is_auto: auto,
+            is_unsafe: unsafety == rustc_hir::Unsafety::Unsafe,
+            items: items.into_iter().map(Into::into).collect(),
+            generics: generics.into(),
+            bounds: bounds.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<clean::Impl> for Impl {
+    fn from(impl_: clean::Impl) -> Self {
+        let clean::Impl {
+            unsafety,
+            generics,
+            provided_trait_methods,
+            trait_,
+            for_,
+            items,
+            polarity,
+            synthetic,
+            blanket_impl,
+        } = impl_;
+        Impl {
+            is_unsafe: unsafety == rustc_hir::Unsafety::Unsafe,
+            generics: generics.into(),
+            provided_trait_methods: provided_trait_methods.into_iter().collect(),
+            trait_: trait_.map(Into::into),
+            for_: for_.into(),
+            items: items.into_iter().map(Into::into).collect(),
+            negative: polarity == Some(clean::ImplPolarity::Negative),
+            synthetic,
+            blanket_impl: blanket_impl.map(Into::into),
+        }
+    }
+}
+
+impl From<clean::TyMethod> for Method {
+    fn from(method: clean::TyMethod) -> Self {
+        let clean::TyMethod { header, decl, generics, all_types: _, ret_types: _ } = method;
+        Method {
+            header: header.into(),
+            decl: decl.into(),
+            generics: generics.into(),
+            has_body: false,
+        }
+    }
+}
+
+impl From<clean::Method> for Method {
+    fn from(method: clean::Method) -> Self {
+        let clean::Method { header, decl, generics, defaultness: _, all_types: _, ret_types: _ } =
+            method;
+        Method {
+            header: header.into(),
+            decl: decl.into(),
+            generics: generics.into(),
+            has_body: true,
+        }
+    }
+}
+
+impl From<clean::Enum> for Enum {
+    fn from(enum_: clean::Enum) -> Self {
+        let clean::Enum { variants, generics, variants_stripped } = enum_;
+        Enum {
+            generics: generics.into(),
+            variants_stripped,
+            variants: variants.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<clean::VariantStruct> for Struct {
+    fn from(struct_: clean::VariantStruct) -> Self {
+        let clean::VariantStruct { struct_type, fields, fields_stripped } = struct_;
+        Struct {
+            struct_type: struct_type.into(),
+            generics: Default::default(),
+            fields_stripped,
+            fields: fields.into_iter().map(Into::into).collect(),
+        }
+    }
+}
+
+impl From<clean::Variant> for Variant {
+    fn from(variant: clean::Variant) -> Self {
+        use clean::VariantKind::*;
+        match variant.kind {
+            CLike => Variant::Plain,
+            Tuple(t) => Variant::Tuple(t.into_iter().map(Into::into).collect()),
+            Struct(s) => Variant::Struct(s.into()),
+        }
+    }
+}
+
+impl From<clean::Import> for Import {
+    fn from(import: clean::Import) -> Self {
+        use clean::Import::*;
+        match import {
+            Simple(s, i) => Import::Simple(s, i.into()),
+            Glob(i) => Import::Glob(i.into()),
+        }
+    }
+}
+
+impl From<clean::ImportSource> for ImportSource {
+    fn from(source: clean::ImportSource) -> Self {
+        ImportSource { path: source.path.into(), id: source.did.map(Into::into) }
+    }
+}
+
+impl From<clean::Macro> for Macro {
+    fn from(mac: clean::Macro) -> Self {
+        Macro { source: mac.source, imported_from: mac.imported_from }
+    }
+}
+
+impl From<clean::ProcMacro> for ProcMacro {
+    fn from(mac: clean::ProcMacro) -> Self {
+        ProcMacro { kind: mac.kind.into(), helpers: mac.helpers }
+    }
+}
+
+impl From<rustc_span::hygiene::MacroKind> for MacroKind {
+    fn from(kind: rustc_span::hygiene::MacroKind) -> Self {
+        use rustc_span::hygiene::MacroKind::*;
         match kind {
-            Enum => TypeKind::Enum,
-            Function => TypeKind::Function,
-            Module => TypeKind::Module,
-            Const => TypeKind::Const,
-            Static => TypeKind::Static,
-            Struct => TypeKind::Struct,
-            Union => TypeKind::Union,
-            Trait => TypeKind::Trait,
-            Typedef => TypeKind::Typedef,
-            Foreign => TypeKind::Foreign,
-            Macro => TypeKind::Macro,
-            Attr => TypeKind::Attr,
-            Derive => TypeKind::Derive,
-            TraitAlias => TypeKind::TraitAlias,
+            Bang => MacroKind::Bang,
+            Attr => MacroKind::Attr,
+            Derive => MacroKind::Derive,
+        }
+    }
+}
+
+impl From<clean::Typedef> for Typedef {
+    fn from(typedef: clean::Typedef) -> Self {
+        let clean::Typedef { type_, generics, item_type } = typedef;
+        Typedef {
+            type_: type_.into(),
+            generics: generics.into(),
+            item_type: item_type.map(Into::into),
+        }
+    }
+}
+
+impl From<clean::OpaqueTy> for OpaqueTy {
+    fn from(opaque: clean::OpaqueTy) -> Self {
+        OpaqueTy {
+            bounds: opaque.bounds.into_iter().map(Into::into).collect(),
+            generics: opaque.generics.into(),
+        }
+    }
+}
+
+impl From<clean::Static> for Static {
+    fn from(stat: clean::Static) -> Self {
+        Static {
+            type_: stat.type_.into(),
+            mutable: stat.mutability == ast::Mutability::Mut,
+            expr: stat.expr,
+        }
+    }
+}
+
+impl From<clean::TraitAlias> for TraitAlias {
+    fn from(alias: clean::TraitAlias) -> Self {
+        TraitAlias {
+            generics: alias.generics.into(),
+            bounds: alias.bounds.into_iter().map(Into::into).collect(),
         }
     }
 }
