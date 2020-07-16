@@ -1,19 +1,31 @@
-use std::num::NonZeroU32;
 use std::path::PathBuf;
 
 use rustc_data_structures::fx::FxHashMap;
 use serde::Serialize;
 
+/// A `Crate` is the root of the emitted JSON blob. It contains all type/documentation information
+/// about the language items in the local crate, as well as info about external items to allow
+/// tools to find or link to them.
 #[derive(Clone, Debug, Serialize)]
 pub struct Crate {
+    /// The id of the root `Module` item of the local crate.
     pub root: Id,
+    /// The version string given to `--crate-version`, if any.
     pub version: Option<String>,
+    /// Whether or not the output includes private items.
     pub includes_private: bool,
+    /// A collection of all `Item`s in the local crate.
     pub index: FxHashMap<Id, Item>,
+    /// A collection of external traits referenced by items in the local crate.
+    pub traits: FxHashMap<Id, Trait>,
+    /// Maps ids to fully qualified paths (e.g. `["std", "io", "lazy", "Lazy"]` for
+    /// `std::io::lazy::Lazy`) as well as their `ItemKind`
+    pub paths: FxHashMap<Id, (Vec<String>, ItemKind)>,
+    pub external_paths: FxHashMap<Id, (Vec<String>, ItemKind)>,
     pub type_to_trait_impls: FxHashMap<Id, Vec<Id>>,
     pub trait_to_implementors: FxHashMap<Id, Vec<Id>>,
     /// Maps `crate_num` of items to crate names and html_root_url if it exists
-    pub extern_crates: FxHashMap<u32, (String, Option<String>)>,
+    pub external_crates: FxHashMap<u32, (String, Option<String>)>,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -24,6 +36,7 @@ pub struct Item {
     pub source: Span,
     pub visibility: Visibility,
     pub docs: Option<String>,
+    pub attrs: Vec<String>,
     pub kind: ItemKind,
     pub inner: ItemEnum,
     // TODO: the `Attributes` struct defers to compiler internal symbols. seems like it would be
@@ -38,10 +51,12 @@ pub struct Item {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Span {
+    /// The path to the source file for this span relative to the crate root. May not be present if
+    /// the file came from a macro expansion, inline assembly, other "virtual" files
     pub filename: Option<PathBuf>,
-    /// (Line, Column) of the first character of the `Span`
+    /// Zero indexed Line and Column of the first character of the `Span`
     pub begin: (usize, usize),
-    /// (Line, Column) of the last character of the `Span`
+    /// Zero indexed Line and Column of the last character of the `Span`
     pub end: (usize, usize),
 }
 
@@ -56,6 +71,7 @@ pub enum Visibility {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Path {
+    /// Leading `::`
     pub global: bool,
     pub segments: Vec<PathSegment>,
 }
@@ -69,7 +85,9 @@ pub struct PathSegment {
 #[serde(rename_all = "snake_case")]
 #[derive(Clone, Debug, Serialize)]
 pub enum GenericArgs {
+    /// <'a, 32, B: Copy, C = u32>
     AngleBracketed { args: Vec<GenericArg>, bindings: Vec<TypeBinding> },
+    /// Fn(A, B) -> C
     Parenthesized { inputs: Vec<Type>, output: Option<Type> },
 }
 
@@ -106,22 +124,6 @@ pub enum TypeBindingKind {
 #[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize)]
 pub struct Id(pub String);
 
-#[derive(Clone, Debug, Serialize)]
-pub struct Stability {
-    pub stable: bool,
-    pub feature: Option<String>,
-    pub since: String,
-    pub deprecation: Option<Deprecation>,
-    pub unstable_reason: Option<String>,
-    pub issue: Option<NonZeroU32>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct Deprecation {
-    pub since: Option<String>,
-    pub note: Option<String>,
-}
-
 #[serde(rename_all = "snake_case")]
 #[derive(Clone, Debug, Serialize)]
 pub enum ItemKind {
@@ -130,10 +132,11 @@ pub enum ItemKind {
     Import,
     Struct,
     StructField,
+    Union,
     Enum,
     Variant,
     Function,
-    ForeignFunction,
+    // ForeignFunction,
     Typedef,
     OpaqueTy,
     Constant,
@@ -142,13 +145,17 @@ pub enum ItemKind {
     Method,
     Impl,
     Static,
-    ForeignStatic,
+    // ForeignStatic,
     ForeignType,
     Macro,
-    ProcMacro,
+    ProcAttribute,
+    ProcDerive,
+    // ProcMacro,
     AssocConst,
     AssocType,
-    Stripped,
+    // Stripped,
+    Primitive,
+    Keyword,
 }
 
 #[serde(rename_all = "snake_case")]
@@ -167,8 +174,8 @@ pub enum ItemEnum {
     /// `fn`s from an extern block
     ForeignFunctionItem(Function),
 
-    TypedefItem(Typedef, bool /* is associated type */),
-    OpaqueTyItem(OpaqueTy, bool /* is associated type */),
+    TypedefItem(Typedef),
+    OpaqueTyItem(OpaqueTy),
     ConstantItem(Constant),
 
     TraitItem(Trait),
@@ -203,14 +210,14 @@ pub struct Struct {
     pub struct_type: StructType,
     pub generics: Generics,
     pub fields_stripped: bool,
-    pub fields: Vec<Item>,
+    pub fields: Vec<Id>,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Enum {
     pub generics: Generics,
     pub variants_stripped: bool,
-    pub variants: Vec<Item>,
+    pub variants: Vec<Id>,
 }
 
 #[serde(rename_all = "snake_case")]
@@ -238,9 +245,9 @@ pub struct Function {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Method {
-    pub header: FnHeader,
     pub decl: FnDecl,
     pub generics: Generics,
+    pub header: FnHeader,
     pub has_body: bool,
 }
 
@@ -269,15 +276,13 @@ pub struct GenericParamDef {
 pub enum GenericParamDefKind {
     Lifetime,
     Type {
-        id: Id,
         bounds: Vec<GenericBound>,
         default: Option<Type>,
-        // synthetic: bool, // TODO: check if necessary
+        /// Marks if a type parameter was generated by desugaring `impl trait`, for example:
+        /// `fn foo(x: impl Trait)` -> `fn foo<T: Trait>(x: T)`
+        synthetic: bool,
     },
-    Const {
-        id: Id,
-        ty: Type,
-    },
+    Const(Type),
 }
 
 #[serde(rename_all = "snake_case")]
@@ -291,15 +296,14 @@ pub enum WherePredicate {
 #[serde(rename_all = "snake_case")]
 #[derive(Clone, Debug, Serialize)]
 pub enum GenericBound {
-    TraitBound(PolyTrait, TraitBoundModifier),
+    TraitBound {
+        #[serde(rename = "trait")]
+        trait_: Type,
+        /// Used for HRTBs
+        generic_params: Vec<GenericParamDef>,
+        modifier: TraitBoundModifier,
+    },
     Outlives(String),
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct PolyTrait {
-    #[serde(rename = "trait")]
-    pub trait_: Type,
-    pub generic_params: Vec<GenericParamDef>,
 }
 
 #[serde(rename_all = "snake_case")]
@@ -359,25 +363,32 @@ pub enum Type {
     Primitive(PrimitiveType),
     /// `extern "ABI" fn`
     BareFunction(Box<BareFunctionDecl>),
+    /// `(String, u32, Box<usize>)`
     Tuple(Vec<Type>),
+    /// `[u32]`
     Slice(Box<Type>),
-    // Second field is stringified length
+    /// Second field is stringified length
     Array(Box<Type>, String),
-    ImplTrait(Vec<GenericBound>), // `impl TraitA + TraitB + ...`
+    /// `impl TraitA + TraitB + ...`
+    ImplTrait(Vec<GenericBound>),
+    /// `!`
     Never,
-    Infer, // `_`
+    /// `_`
+    Infer,
+    /// `*mut u32`, `*u8`, etc.
     RawPointer {
         mutable: bool,
         #[serde(rename = "type")]
         type_: Box<Type>,
     },
+    /// `&'a mut String`, `&str`, etc.
     BorrowedRef {
         lifetime: Option<String>,
         mutable: bool,
         #[serde(rename = "type")]
         type_: Box<Type>,
     },
-    // `<Type as Trait>::Name`
+    /// `<Type as Trait>::Name` or associated types like `T::Item` where `T: Iterator`
     QPath {
         name: String,
         self_type: Box<Type>,
@@ -405,7 +416,7 @@ pub struct FnDecl {
 pub struct Trait {
     pub is_auto: bool,
     pub is_unsafe: bool,
-    pub items: Vec<Item>,
+    pub items: Vec<Id>,
     pub generics: Generics,
     pub bounds: Vec<GenericBound>,
 }
@@ -425,7 +436,7 @@ pub struct Impl {
     pub trait_: Option<Type>,
     #[serde(rename = "for")]
     pub for_: Type,
-    pub items: Vec<Item>,
+    pub items: Vec<Id>,
     pub negative: bool,
     pub synthetic: bool,
     pub blanket_impl: Option<Type>,
@@ -474,8 +485,6 @@ pub struct Typedef {
     #[serde(rename = "type")]
     pub type_: Type,
     pub generics: Generics,
-    // Type of target item.
-    pub item_type: Option<Type>,
 }
 
 #[derive(Clone, Debug, Serialize)]
