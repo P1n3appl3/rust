@@ -20,6 +20,12 @@ pub struct JsonRenderer {
     index: Rc<RefCell<FxHashMap<types::Id, types::Item>>>,
 }
 
+impl JsonRenderer {
+    fn insert(&self, item: clean::Item) {
+        self.index.borrow_mut().insert(item.def_id.clone().into(), item.into());
+    }
+}
+
 impl FormatRenderer for JsonRenderer {
     fn init(
         krate: clean::Crate,
@@ -33,7 +39,20 @@ impl FormatRenderer for JsonRenderer {
     }
 
     fn item(&mut self, item: clean::Item, _cache: &Cache) -> Result<(), Error> {
-        self.index.borrow_mut().insert(item.def_id.into(), item.into());
+        use clean::ItemEnum::*;
+        // Flatten items that recursively store other items
+        match item.inner.clone() {
+            StructItem(s) => s.fields.into_iter().for_each(|i| self.insert(i)),
+            UnionItem(u) => u.fields.into_iter().for_each(|i| self.insert(i)),
+            VariantItem(clean::Variant { kind: clean::VariantKind::Struct(v) }) => {
+                v.fields.into_iter().for_each(|i| self.insert(i));
+            }
+            EnumItem(e) => e.variants.into_iter().for_each(|i| self.insert(i)),
+            TraitItem(t) => t.items.into_iter().for_each(|i| self.insert(i)),
+            ImplItem(i) => i.items.into_iter().for_each(|i| self.insert(i)),
+            _ => {}
+        }
+        self.insert(item);
         Ok(())
     }
 
@@ -43,7 +62,7 @@ impl FormatRenderer for JsonRenderer {
         _item_name: &str,
         _cache: &Cache,
     ) -> Result<(), Error> {
-        self.index.borrow_mut().insert(item.def_id.into(), item.clone().into());
+        self.insert(item.clone());
         Ok(())
     }
 
@@ -58,7 +77,7 @@ impl FormatRenderer for JsonRenderer {
             .impls
             .clone()
             .into_iter()
-            .filter(|(k, _)| k.krate == rustc_span::def_id::LOCAL_CRATE)
+            .filter(|(k, _)| k.is_local())
             .map(|(k, v)| {
                 for i in &v {
                     self.index
@@ -76,21 +95,37 @@ impl FormatRenderer for JsonRenderer {
                 (
                     k.into(),
                     v.into_iter()
-                        .filter(|i| i.impl_item.def_id.krate == rustc_span::def_id::LOCAL_CRATE)
+                        .filter(|i| i.impl_item.def_id.is_local())
                         .map(|i| i.impl_item.def_id.into())
                         .collect(),
                 )
             })
-            .filter(|(_, v): &(types::Id, Vec<types::Id>)| !v.is_empty())
+            // TODO: check that k is local
+            .filter(|(_k, v): &(types::Id, Vec<types::Id>)| !v.is_empty())
             .collect();
         let output = types::Crate {
             root: types::Id("0:0".to_string()),
             version: krate.version.clone(),
             includes_private: cache.document_private,
             index: (*self.index).clone().into_inner(),
+            // traits: cache.traits.clone().into_iter().map(|(k, v)| (k.into(), v.into())).collect(),
+            traits: FxHashMap::default(),
+            paths: cache
+                .paths
+                .clone()
+                .into_iter()
+                .map(|(k, (path, kind))| (k.into(), (path, kind.into())))
+                .collect(),
+            // external_paths: cache
+            //     .external_paths
+            //     .clone()
+            //     .into_iter()
+            //     .map(|(k, (path, kind))| (k.into(), (path, kind.into())))
+            //     .collect(),
+            external_paths: FxHashMap::default(),
             type_to_trait_impls,
             trait_to_implementors,
-            extern_crates: cache
+            external_crates: cache
                 .extern_locations
                 .iter()
                 .map(|(k, v)| {
