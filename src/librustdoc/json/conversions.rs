@@ -22,7 +22,6 @@ impl From<clean::Item> for Item {
         } = item.clone();
         // TODO: dont clone
         Item {
-            id: def_id.into(),
             crate_num: def_id.krate.as_u32(),
             name,
             source: source.into(),
@@ -66,7 +65,7 @@ impl From<clean::Visibility> for Visibility {
         use clean::Visibility::*;
         match v {
             Public => Visibility::Public,
-            Inherited => Visibility::Inherited,
+            Inherited => Visibility::Default,
             Crate => Visibility::Crate,
             Restricted(did, path) => Visibility::Restricted(did.into(), path.into()),
         }
@@ -170,10 +169,11 @@ impl From<clean::ItemEnum> for ItemEnum {
             ConstantItem(c) => ItemEnum::ConstantItem(c.into()),
             MacroItem(m) => ItemEnum::MacroItem(m.into()),
             ProcMacroItem(m) => ItemEnum::ProcMacroItem(m.into()),
-            AssocConstItem(t, s) => ItemEnum::AssocConstItem(t.into(), s),
-            AssocTypeItem(g, t) => {
-                ItemEnum::AssocTypeItem(g.into_iter().map(Into::into).collect(), t.map(Into::into))
-            }
+            AssocConstItem(t, s) => ItemEnum::AssocConstItem { type_: t.into(), default: s },
+            AssocTypeItem(g, t) => ItemEnum::AssocTypeItem {
+                bounds: g.into_iter().map(Into::into).collect(),
+                default: t.map(Into::into),
+            },
             StrippedItem(inner) => ItemEnum::StrippedItem(Box::new((*inner).into())),
             _ => panic!("{:?} is not supported for JSON output", item),
         }
@@ -197,6 +197,7 @@ impl From<clean::Struct> for Struct {
             generics: generics.into(),
             fields_stripped,
             fields: fields.into_iter().map(|i| i.def_id.into()).collect(),
+            impls: Vec::new(), // TODO
         }
     }
 }
@@ -209,6 +210,7 @@ impl From<clean::Union> for Struct {
             generics: generics.into(),
             fields_stripped,
             fields: fields.into_iter().map(|i| i.def_id.into()).collect(),
+            impls: Vec::new(), // TODO
         }
     }
 }
@@ -224,19 +226,24 @@ impl From<doctree::StructType> for StructType {
     }
 }
 
+fn stringify_header(header: &rustc_hir::FnHeader) -> String {
+    let mut s = String::from(header.unsafety.prefix_str());
+    if header.asyncness == rustc_hir::IsAsync::Async {
+        s.push_str("async ")
+    }
+    if header.constness == rustc_hir::Constness::Const {
+        s.push_str("const ")
+    }
+    s
+}
+
 impl From<clean::Function> for Function {
     fn from(function: clean::Function) -> Self {
         let clean::Function { decl, generics, header, all_types: _, ret_types: _ } = function;
-        Function { decl: decl.into(), generics: generics.into(), header: header.into() }
-    }
-}
-
-impl From<rustc_hir::FnHeader> for FnHeader {
-    fn from(header: rustc_hir::FnHeader) -> Self {
-        FnHeader {
-            is_unsafe: header.unsafety == rustc_hir::Unsafety::Unsafe,
-            is_const: header.constness == rustc_hir::Constness::Const,
-            is_async: header.asyncness == rustc_hir::IsAsync::Async,
+        Function {
+            decl: decl.into(),
+            generics: generics.into(),
+            header: stringify_header(&header),
             abi: header.abi.to_string(),
         }
     }
@@ -262,10 +269,9 @@ impl From<clean::GenericParamDefKind> for GenericParamDefKind {
         use clean::GenericParamDefKind::*;
         match kind {
             Lifetime => GenericParamDefKind::Lifetime,
-            Type { did: _, bounds, default, synthetic } => GenericParamDefKind::Type {
+            Type { did: _, bounds, default, synthetic: _ } => GenericParamDefKind::Type {
                 bounds: bounds.into_iter().map(Into::into).collect(),
                 default: default.map(Into::into),
-                synthetic: synthetic.is_some(),
             },
             Const { did: _, ty } => GenericParamDefKind::Const(ty.into()),
         }
@@ -318,56 +324,27 @@ impl From<rustc_hir::TraitBoundModifier> for TraitBoundModifier {
     }
 }
 
-impl From<clean::PrimitiveType> for PrimitiveType {
-    fn from(ty: clean::PrimitiveType) -> Self {
-        use clean::PrimitiveType::*;
-        match ty {
-            Isize => PrimitiveType::Isize,
-            I8 => PrimitiveType::I8,
-            I16 => PrimitiveType::I16,
-            I32 => PrimitiveType::I32,
-            I64 => PrimitiveType::I64,
-            I128 => PrimitiveType::I128,
-            Usize => PrimitiveType::Usize,
-            U8 => PrimitiveType::U8,
-            U16 => PrimitiveType::U16,
-            U32 => PrimitiveType::U32,
-            U64 => PrimitiveType::U64,
-            U128 => PrimitiveType::U128,
-            F32 => PrimitiveType::F32,
-            F64 => PrimitiveType::F64,
-            Char => PrimitiveType::Char,
-            Bool => PrimitiveType::Bool,
-            Str => PrimitiveType::Str,
-            Slice => PrimitiveType::Slice,
-            Array => PrimitiveType::Array,
-            Tuple => PrimitiveType::Tuple,
-            Unit => PrimitiveType::Unit,
-            RawPointer => PrimitiveType::RawPointer,
-            Reference => PrimitiveType::Reference,
-            Fn => PrimitiveType::Fn,
-            Never => PrimitiveType::Never,
-        }
-    }
-}
-
 impl From<clean::Type> for Type {
     fn from(ty: clean::Type) -> Self {
         use clean::Type::*;
         match ty {
             ResolvedPath { path, param_names, did, is_generic } => Type::ResolvedPath {
-                path: path.into(),
+                name: String::from(if path.global { "::" } else { "" })
+                    + &path.segments.iter().map(|s| s.name.clone()).collect::<Vec<_>>().join("::"),
+                args: Box::new(
+                    path.segments.last().expect("segments were empty").clone().args.into(),
+                ),
                 param_names: param_names.map(|v| v.into_iter().map(Into::into).collect()),
                 id: did.into(),
                 is_generic,
             },
             Generic(s) => Type::Generic(s),
-            Primitive(p) => Type::Primitive(p.into()),
+            Primitive(p) => Type::Primitive(p.as_str().to_string()),
             // TODO: check if there's a more idiomatic way of calling `into` on Box<T>
             BareFunction(f) => Type::BareFunction(Box::new((*f).into())),
             Tuple(t) => Type::Tuple(t.into_iter().map(Into::into).collect()),
             Slice(t) => Type::Slice(Box::new((*t).into())),
-            Array(t, s) => Type::Array(Box::new((*t).into()), s),
+            Array(t, s) => Type::Array { type_: Box::new((*t).into()), len: s },
             ImplTrait(g) => Type::ImplTrait(g.into_iter().map(Into::into).collect()),
             Never => Type::Never,
             Infer => Type::Infer,
@@ -380,7 +357,7 @@ impl From<clean::Type> for Type {
                 mutable: mutability == ast::Mutability::Mut,
                 type_: Box::new((*type_).into()),
             },
-            QPath { name, self_type, trait_ } => Type::QPath {
+            QPath { name, self_type, trait_ } => Type::QualifiedPath {
                 name,
                 self_type: Box::new((*self_type).into()),
                 trait_: Box::new((*trait_).into()),
@@ -424,6 +401,7 @@ impl From<clean::Trait> for Trait {
             items: items.into_iter().map(|i| i.def_id.into()).collect(),
             generics: generics.into(),
             bounds: bounds.into_iter().map(Into::into).collect(),
+            implementors: Vec::new(), // TODO
         }
     }
 }
@@ -461,7 +439,7 @@ impl From<clean::TyMethod> for Method {
         Method {
             decl: decl.into(),
             generics: generics.into(),
-            header: header.into(),
+            header: stringify_header(&header),
             has_body: false,
         }
     }
@@ -474,7 +452,7 @@ impl From<clean::Method> for Method {
         Method {
             decl: decl.into(),
             generics: generics.into(),
-            header: header.into(),
+            header: stringify_header(&header),
             has_body: true,
         }
     }
@@ -487,6 +465,7 @@ impl From<clean::Enum> for Enum {
             generics: generics.into(),
             variants_stripped,
             variants: variants.into_iter().map(|i| i.def_id.into()).collect(),
+            impls: Vec::new(), // TODO
         }
     }
 }
@@ -499,6 +478,7 @@ impl From<clean::VariantStruct> for Struct {
             generics: Default::default(),
             fields_stripped,
             fields: fields.into_iter().map(|i| i.def_id.into()).collect(),
+            impls: Vec::new(), // TODO
         }
     }
 }
