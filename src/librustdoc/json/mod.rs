@@ -22,7 +22,7 @@ pub struct JsonRenderer {
 
 impl JsonRenderer {
     fn insert(&self, item: clean::Item) {
-        self.index.borrow_mut().insert(item.def_id.clone().into(), item.into());
+        self.index.borrow_mut().insert(item.def_id.into(), item.into());
     }
 }
 
@@ -73,36 +73,39 @@ impl FormatRenderer for JsonRenderer {
 
     fn after_krate(&mut self, krate: &clean::Crate, cache: &Cache) -> Result<(), Error> {
         debug!("Done with crate");
-        let type_to_trait_impls = cache
-            .impls
-            .clone()
-            .into_iter()
-            .filter(|(k, _)| k.is_local())
-            .map(|(k, v)| {
-                for i in &v {
-                    self.index
-                        .borrow_mut()
-                        .insert(i.impl_item.def_id.into(), i.clone().impl_item.into());
-                }
-                (k.into(), v.into_iter().map(|i| i.impl_item.def_id.into()).collect())
-            })
-            .collect();
-        let trait_to_implementors = cache
-            .implementors
-            .clone()
-            .into_iter()
-            .map(|(k, v)| {
-                (
-                    k.into(),
-                    v.into_iter()
-                        .filter(|i| i.impl_item.def_id.is_local())
-                        .map(|i| i.impl_item.def_id.into())
-                        .collect(),
-                )
-            })
-            // TODO: check that k is local
-            .filter(|(_k, v): &(types::Id, Vec<types::Id>)| !v.is_empty())
-            .collect();
+        // let type_to_trait_impls = cache
+        //     .impls
+        //     .clone()
+        //     .into_iter()
+        //     .filter(|(k, _)| k.is_local())
+        //     .map(|(k, v)| {
+        //         v.clone().into_iter().for_each(|i| {
+        //             self.insert(i.impl_item.clone());
+        //             if let clean::ImplItem(inner_impl) = i.impl_item.inner {
+        //                 inner_impl.items.into_iter().for_each(|i| self.insert(i));
+        //             } else {
+        //                 unreachable!()
+        //             }
+        //         });
+        //         (k.into(), v.into_iter().map(|i| i.impl_item.def_id.into()).collect())
+        //     })
+        //     .collect();
+        // let trait_to_implementors = cache
+        //     .implementors
+        //     .clone()
+        //     .into_iter()
+        //     .map(|(k, v)| {
+        //         (
+        //             k.into(),
+        //             v.into_iter()
+        //                 .filter(|i| i.impl_item.def_id.is_local())
+        //                 .map(|i| i.impl_item.def_id.into())
+        //                 .collect(),
+        //         )
+        //     })
+        //     // TODO: check that k is local
+        //     .filter(|(_k, v): &(types::Id, Vec<types::Id>)| !v.is_empty())
+        //     .collect();
         let output = types::Crate {
             root: types::Id("0:0".to_string()),
             version: krate.version.clone(),
@@ -114,30 +117,29 @@ impl FormatRenderer for JsonRenderer {
                 .paths
                 .clone()
                 .into_iter()
-                .map(|(k, (path, kind))| (k.into(), (path, kind.into())))
+                .chain(cache.external_paths.clone().into_iter())
+                .map(|(k, (path, kind))| {
+                    (
+                        k.into(),
+                        types::ItemSummary { crate_num: k.krate.as_u32(), path, kind: kind.into() },
+                    )
+                })
                 .collect(),
-            // external_paths: cache
-            //     .external_paths
-            //     .clone()
-            //     .into_iter()
-            //     .map(|(k, (path, kind))| (k.into(), (path, kind.into())))
-            //     .collect(),
-            external_paths: FxHashMap::default(),
-            type_to_trait_impls,
-            trait_to_implementors,
+            // type_to_trait_impls,
+            // trait_to_implementors,
             external_crates: cache
                 .extern_locations
                 .iter()
                 .map(|(k, v)| {
                     (
                         k.as_u32(),
-                        (
-                            v.0.clone(),
-                            match &v.2 {
+                        types::ExternalCrate {
+                            name: v.0.clone(),
+                            html_root_url: match &v.2 {
                                 ExternalLocation::Remote(s) => Some(s.clone()),
                                 _ => None,
                             },
-                        ),
+                        },
                     )
                 })
                 .collect(),
