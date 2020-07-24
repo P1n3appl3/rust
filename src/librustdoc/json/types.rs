@@ -21,10 +21,7 @@ pub struct Crate {
     /// Maps ids to fully qualified paths (e.g. `["std", "io", "lazy", "Lazy"]` for
     /// `std::io::lazy::Lazy`) as well as their `ItemKind`
     pub paths: FxHashMap<Id, ItemSummary>,
-    // pub external_paths: FxHashMap<Id, ItemSummary>,
-    // pub type_to_trait_impls: FxHashMap<Id, Vec<Id>>,
-    // pub trait_to_implementors: FxHashMap<Id, Vec<Id>>,
-    /// Maps `crate_num` of items to crate names and html_root_url if it exists
+    /// Maps `crate_num` of items to a crate name and html_root_url if it exists
     pub external_crates: FxHashMap<u32, ExternalCrate>,
 }
 
@@ -47,18 +44,15 @@ pub struct Item {
     pub name: Option<String>,
     pub source: Span,
     pub visibility: Visibility,
-    pub docs: Option<String>,
+    pub docs: String,
     pub attrs: Vec<String>,
+    pub deprecation: Option<Deprecation>,
     pub kind: ItemKind,
     pub inner: ItemEnum,
-    // TODO: the `Attributes` struct defers to compiler internal symbols. seems like it would be
-    // hard to expose arbitrary ones so we should either special case things like `cfg` that matter
-    // for docs or just stringify all non-doc attributes to let the user deal with them
-    // pub attrs: Attributes,
-    // TODO: should we support this if it's only used by `std`?
-    // pub stability: Option<Stability>,
-    // TODO: why is this necessary when stability contains one?
-    // pub deprecation: Option<Deprecation>,
+    // TODO: should we stringify the cfg attrs as well, or should we preserve their structure so
+    // the consumer doesn't have to parse an arbitrarily nested tree to figure out what platforms
+    // the item is available on?
+    // TODO: should we have a "stability" field if it's only used by the standard library?
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -72,26 +66,19 @@ pub struct Span {
     pub end: (usize, usize),
 }
 
+#[derive(Clone, Debug, Serialize)]
+pub struct Deprecation {
+    pub since: Option<String>,
+    pub note: Option<String>,
+}
+
 #[serde(rename_all = "snake_case")]
 #[derive(Clone, Debug, Serialize)]
 pub enum Visibility {
     Public,
     Default,
     Crate,
-    Restricted(Id, Path),
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct Path {
-    /// Leading `::`
-    pub global: bool,
-    pub segments: Vec<PathSegment>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct PathSegment {
-    pub name: String,
-    pub args: GenericArgs,
+    Restricted(Id, String),
 }
 
 #[serde(rename_all = "snake_case")]
@@ -123,7 +110,7 @@ pub struct Constant {
 #[derive(Clone, Debug, Serialize)]
 pub struct TypeBinding {
     pub name: String,
-    pub kind: TypeBindingKind,
+    pub binding: TypeBindingKind,
 }
 
 #[serde(rename_all = "snake_case")]
@@ -148,7 +135,6 @@ pub enum ItemKind {
     Enum,
     Variant,
     Function,
-    // ForeignFunction,
     Typedef,
     OpaqueTy,
     Constant,
@@ -157,24 +143,24 @@ pub enum ItemKind {
     Method,
     Impl,
     Static,
-    // ForeignStatic,
     ForeignType,
     Macro,
     ProcAttribute,
     ProcDerive,
-    // ProcMacro,
     AssocConst,
     AssocType,
-    // Stripped,
     Primitive,
     Keyword,
 }
 
-#[serde(rename_all = "snake_case")]
+#[serde(untagged)]
 #[derive(Clone, Debug, Serialize)]
 pub enum ItemEnum {
     ModuleItem(Module),
-    ExternCrateItem(String, Option<String>),
+    ExternCrateItem {
+        name: String,
+        rename: Option<String>,
+    },
     ImportItem(Import),
 
     StructItem(Struct),
@@ -183,8 +169,6 @@ pub enum ItemEnum {
     VariantItem(Variant),
 
     FunctionItem(Function),
-    /// `fn`s from an extern block
-    ForeignFunctionItem(Function),
 
     TypedefItem(Typedef),
     OpaqueTyItem(OpaqueTy),
@@ -196,12 +180,12 @@ pub enum ItemEnum {
     ImplItem(Impl),
 
     StaticItem(Static),
-    /// `static`s from an extern block
-    ForeignStaticItem(Static),
+
     /// `type`s from an extern block
     ForeignTypeItem,
 
-    MacroItem(Macro),
+    /// Declarative macro_rules! macro
+    MacroItem(String),
     ProcMacroItem(ProcMacro),
 
     AssocConstItem {
@@ -329,11 +313,9 @@ pub enum Type {
     /// Structs/enums/traits (most that would be an `hir::TyKind::Path`).
     ResolvedPath {
         name: String,
-        args: Box<GenericArgs>,
-        param_names: Option<Vec<GenericBound>>,
         id: Id,
-        /// `true` if is a `T::Name` path for associated types.
-        is_generic: bool,
+        args: Box<Option<GenericArgs>>,
+        param_names: Vec<GenericBound>,
     },
     /// For parameterized types, so the consumer of the JSON don't go
     /// looking for types which don't exist anywhere.
@@ -429,23 +411,16 @@ pub struct Impl {
 
 #[serde(rename_all = "snake_case")]
 #[derive(Clone, Debug, Serialize)]
-pub enum Import {
-    // use source as str;
-    Simple(String, ImportSource),
-    // use source::*;
-    Glob(ImportSource),
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct ImportSource {
-    pub path: Path,
-    pub id: Option<Id>,
-}
-
-#[derive(Clone, Debug, Serialize)]
-pub struct Macro {
+pub struct Import {
+    /// The full path being imported.
     pub source: String,
-    pub imported_from: Option<String>,
+    /// May be different from the last segment of `source` when renaming imports:
+    /// `use source as name;`
+    pub name: String,
+    /// The ID of the item being imported.
+    pub id: Option<Id>, // TODO: does this need to be optional
+    /// Whether this import uses a glob: `use source::*;`
+    pub glob: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -470,14 +445,12 @@ pub struct Typedef {
     #[serde(rename = "type")]
     pub type_: Type,
     pub generics: Generics,
-    // pub is_associated: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]
 pub struct OpaqueTy {
     pub bounds: Vec<GenericBound>,
     pub generics: Generics,
-    // pub is_associated: bool,
 }
 
 #[derive(Clone, Debug, Serialize)]

@@ -18,7 +18,7 @@ impl From<clean::Item> for Item {
             visibility,
             def_id,
             stability: _,
-            deprecation: _,
+            deprecation,
         } = item.clone();
         // TODO: dont clone
         Item {
@@ -26,17 +26,15 @@ impl From<clean::Item> for Item {
             name,
             source: source.into(),
             visibility: visibility.into(),
-            docs: attrs.collapsed_doc_value(),
+            docs: attrs.collapsed_doc_value().unwrap_or_default(),
             attrs: attrs
                 .other_attrs
                 .iter()
                 .map(rustc_ast_pretty::pprust::attribute_to_string)
                 .collect(),
+            deprecation: deprecation.map(Into::into),
             kind: ItemType::from(&item).into(),
             inner: inner.into(),
-            // attrs: unimplemented!(),
-            // stability: stability.map(Into::into),
-            // deprecation: deprecation.map(Into::into),
         }
     }
 }
@@ -60,6 +58,12 @@ impl From<clean::Span> for Span {
     }
 }
 
+impl From<clean::Deprecation> for Deprecation {
+    fn from(deprecation: clean::Deprecation) -> Self {
+        Deprecation { since: deprecation.since, note: deprecation.note }
+    }
+}
+
 impl From<clean::Visibility> for Visibility {
     fn from(v: clean::Visibility) -> Self {
         use clean::Visibility::*;
@@ -67,20 +71,8 @@ impl From<clean::Visibility> for Visibility {
             Public => Visibility::Public,
             Inherited => Visibility::Default,
             Crate => Visibility::Crate,
-            Restricted(did, path) => Visibility::Restricted(did.into(), path.into()),
+            Restricted(did, path) => Visibility::Restricted(did.into(), path.whole_name()),
         }
-    }
-}
-
-impl From<clean::Path> for Path {
-    fn from(path: clean::Path) -> Self {
-        Path { global: path.global, segments: path.segments.into_iter().map(Into::into).collect() }
-    }
-}
-
-impl From<clean::PathSegment> for PathSegment {
-    fn from(segment: clean::PathSegment) -> Self {
-        PathSegment { name: segment.name, args: segment.args.into() }
     }
 }
 
@@ -120,7 +112,7 @@ impl From<clean::Constant> for Constant {
 
 impl From<clean::TypeBinding> for TypeBinding {
     fn from(binding: clean::TypeBinding) -> Self {
-        TypeBinding { name: binding.name, kind: binding.kind.into() }
+        TypeBinding { name: binding.name, binding: binding.kind.into() }
     }
 }
 
@@ -147,7 +139,7 @@ impl From<clean::ItemEnum> for ItemEnum {
         use clean::ItemEnum::*;
         match item {
             ModuleItem(m) => ItemEnum::ModuleItem(m.into()),
-            ExternCrateItem(c, a) => ItemEnum::ExternCrateItem(c, a),
+            ExternCrateItem(c, a) => ItemEnum::ExternCrateItem { name: c, rename: a },
             ImportItem(i) => ItemEnum::ImportItem(i.into()),
             StructItem(s) => ItemEnum::StructItem(s.into()),
             UnionItem(u) => ItemEnum::StructItem(u.into()),
@@ -155,19 +147,19 @@ impl From<clean::ItemEnum> for ItemEnum {
             EnumItem(e) => ItemEnum::EnumItem(e.into()),
             VariantItem(v) => ItemEnum::VariantItem(v.into()),
             FunctionItem(f) => ItemEnum::FunctionItem(f.into()),
-            ForeignFunctionItem(f) => ItemEnum::ForeignFunctionItem(f.into()),
+            ForeignFunctionItem(f) => ItemEnum::FunctionItem(f.into()),
             TraitItem(t) => ItemEnum::TraitItem(t.into()),
             TraitAliasItem(t) => ItemEnum::TraitAliasItem(t.into()),
             MethodItem(m) => ItemEnum::MethodItem(m.into()),
             TyMethodItem(m) => ItemEnum::MethodItem(m.into()),
             ImplItem(i) => ItemEnum::ImplItem(i.into()),
             StaticItem(s) => ItemEnum::StaticItem(s.into()),
-            ForeignStaticItem(s) => ItemEnum::ForeignStaticItem(s.into()),
+            ForeignStaticItem(s) => ItemEnum::StaticItem(s.into()),
             ForeignTypeItem => ItemEnum::ForeignTypeItem,
             TypedefItem(t, _) => ItemEnum::TypedefItem(t.into()),
             OpaqueTyItem(t, _) => ItemEnum::OpaqueTyItem(t.into()),
             ConstantItem(c) => ItemEnum::ConstantItem(c.into()),
-            MacroItem(m) => ItemEnum::MacroItem(m.into()),
+            MacroItem(m) => ItemEnum::MacroItem(m.source),
             ProcMacroItem(m) => ItemEnum::ProcMacroItem(m.into()),
             AssocConstItem(t, s) => ItemEnum::AssocConstItem { type_: t.into(), default: s },
             AssocTypeItem(g, t) => ItemEnum::AssocTypeItem {
@@ -328,15 +320,13 @@ impl From<clean::Type> for Type {
     fn from(ty: clean::Type) -> Self {
         use clean::Type::*;
         match ty {
-            ResolvedPath { path, param_names, did, is_generic } => Type::ResolvedPath {
-                name: String::from(if path.global { "::" } else { "" })
-                    + &path.segments.iter().map(|s| s.name.clone()).collect::<Vec<_>>().join("::"),
-                args: Box::new(
-                    path.segments.last().expect("segments were empty").clone().args.into(),
-                ),
-                param_names: param_names.map(|v| v.into_iter().map(Into::into).collect()),
+            ResolvedPath { path, param_names, did, is_generic: _ } => Type::ResolvedPath {
+                name: path.whole_name(),
                 id: did.into(),
-                is_generic,
+                args: Box::new(path.segments.last().map(|args| args.clone().args.into())),
+                param_names: param_names
+                    .map(|v| v.into_iter().map(Into::into).collect())
+                    .unwrap_or_default(),
             },
             Generic(s) => Type::Generic(s),
             Primitive(p) => Type::Primitive(p.as_str().to_string()),
@@ -394,7 +384,8 @@ impl From<clean::FnDecl> for FnDecl {
 
 impl From<clean::Trait> for Trait {
     fn from(trait_: clean::Trait) -> Self {
-        let clean::Trait { auto, unsafety, items, generics, bounds, is_auto: _ } = trait_;
+        let clean::Trait { auto, unsafety, items, generics, bounds, is_spotlight: _, is_auto: _ } =
+            trait_;
         Trait {
             is_auto: auto,
             is_unsafe: unsafety == rustc_hir::Unsafety::Unsafe,
@@ -498,21 +489,19 @@ impl From<clean::Import> for Import {
     fn from(import: clean::Import) -> Self {
         use clean::Import::*;
         match import {
-            Simple(s, i) => Import::Simple(s, i.into()),
-            Glob(i) => Import::Glob(i.into()),
+            Simple(s, i) => Import {
+                source: i.path.whole_name(),
+                name: s,
+                id: i.did.map(Into::into),
+                glob: false,
+            },
+            Glob(i) => Import {
+                source: i.path.whole_name(),
+                name: i.path.last_name().to_string(),
+                id: i.did.map(Into::into),
+                glob: true,
+            },
         }
-    }
-}
-
-impl From<clean::ImportSource> for ImportSource {
-    fn from(source: clean::ImportSource) -> Self {
-        ImportSource { path: source.path.into(), id: source.did.map(Into::into) }
-    }
-}
-
-impl From<clean::Macro> for Macro {
-    fn from(mac: clean::Macro) -> Self {
-        Macro { source: mac.source, imported_from: mac.imported_from }
     }
 }
 

@@ -21,8 +21,61 @@ pub struct JsonRenderer {
 }
 
 impl JsonRenderer {
-    fn insert(&self, item: clean::Item) {
-        self.index.borrow_mut().insert(item.def_id.into(), item.into());
+    fn insert(&self, item: clean::Item, cache: &Cache) {
+        let id = item.def_id;
+        let mut new_item: types::Item = item.into();
+        if let types::ItemEnum::TraitItem(ref mut t) = new_item.inner {
+            t.implementors = self.get_trait_implementors(id, cache)
+        } else if let types::ItemEnum::StructItem(ref mut s) = new_item.inner {
+            s.impls = self.get_impls(id, cache)
+        } else if let types::ItemEnum::EnumItem(ref mut e) = new_item.inner {
+            e.impls = self.get_impls(id, cache)
+        }
+        self.index.borrow_mut().insert(id.into(), new_item);
+    }
+
+    fn get_trait_implementors(
+        &self,
+        id: rustc_span::def_id::DefId,
+        cache: &Cache,
+    ) -> Vec<types::Id> {
+        cache
+            .implementors
+            .get(&id)
+            .map(|implementors| {
+                implementors
+                    .iter()
+                    .map(|i| {
+                        let item = &i.impl_item;
+                        self.insert(item.clone(), cache);
+                        item.def_id.into()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    fn get_impls(&self, id: rustc_span::def_id::DefId, cache: &Cache) -> Vec<types::Id> {
+        cache
+            .impls
+            .get(&id)
+            .map(|impls| {
+                impls
+                    .iter()
+                    .map(|i| {
+                        let item = &i.impl_item;
+                        if item.def_id.is_local() {
+                            self.insert(item.clone(), cache);
+                            Some(item.def_id.into())
+                        } else {
+                            None
+                        }
+                    })
+                    .filter(Option::is_some)
+                    .map(Option::unwrap)
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -38,21 +91,21 @@ impl FormatRenderer for JsonRenderer {
         Ok((JsonRenderer { index: Rc::new(RefCell::new(FxHashMap::default())) }, krate))
     }
 
-    fn item(&mut self, item: clean::Item, _cache: &Cache) -> Result<(), Error> {
+    fn item(&mut self, item: clean::Item, cache: &Cache) -> Result<(), Error> {
         use clean::ItemEnum::*;
         // Flatten items that recursively store other items
         match item.inner.clone() {
-            StructItem(s) => s.fields.into_iter().for_each(|i| self.insert(i)),
-            UnionItem(u) => u.fields.into_iter().for_each(|i| self.insert(i)),
+            StructItem(s) => s.fields.into_iter().for_each(|i| self.insert(i, cache)),
+            UnionItem(u) => u.fields.into_iter().for_each(|i| self.insert(i, cache)),
             VariantItem(clean::Variant { kind: clean::VariantKind::Struct(v) }) => {
-                v.fields.into_iter().for_each(|i| self.insert(i));
+                v.fields.into_iter().for_each(|i| self.insert(i, cache));
             }
-            EnumItem(e) => e.variants.into_iter().for_each(|i| self.insert(i)),
-            TraitItem(t) => t.items.into_iter().for_each(|i| self.insert(i)),
-            ImplItem(i) => i.items.into_iter().for_each(|i| self.insert(i)),
+            EnumItem(e) => e.variants.into_iter().for_each(|i| self.insert(i, cache)),
+            TraitItem(t) => t.items.into_iter().for_each(|i| self.insert(i, cache)),
+            ImplItem(i) => i.items.into_iter().for_each(|i| self.insert(i, cache)),
             _ => {}
         }
-        self.insert(item);
+        self.insert(item.clone(), cache);
         Ok(())
     }
 
@@ -60,54 +113,20 @@ impl FormatRenderer for JsonRenderer {
         &mut self,
         item: &clean::Item,
         _item_name: &str,
-        _cache: &Cache,
+        cache: &Cache,
     ) -> Result<(), Error> {
-        self.insert(item.clone());
+        self.insert(item.clone(), cache);
         Ok(())
     }
 
     fn mod_item_out(&mut self, _item_name: &str) -> Result<(), Error> {
-        // debug!("Exiting module: {}", item_name);
         Ok(())
     }
 
     fn after_krate(&mut self, krate: &clean::Crate, cache: &Cache) -> Result<(), Error> {
         debug!("Done with crate");
-        // let type_to_trait_impls = cache
-        //     .impls
-        //     .clone()
-        //     .into_iter()
-        //     .filter(|(k, _)| k.is_local())
-        //     .map(|(k, v)| {
-        //         v.clone().into_iter().for_each(|i| {
-        //             self.insert(i.impl_item.clone());
-        //             if let clean::ImplItem(inner_impl) = i.impl_item.inner {
-        //                 inner_impl.items.into_iter().for_each(|i| self.insert(i));
-        //             } else {
-        //                 unreachable!()
-        //             }
-        //         });
-        //         (k.into(), v.into_iter().map(|i| i.impl_item.def_id.into()).collect())
-        //     })
-        //     .collect();
-        // let trait_to_implementors = cache
-        //     .implementors
-        //     .clone()
-        //     .into_iter()
-        //     .map(|(k, v)| {
-        //         (
-        //             k.into(),
-        //             v.into_iter()
-        //                 .filter(|i| i.impl_item.def_id.is_local())
-        //                 .map(|i| i.impl_item.def_id.into())
-        //                 .collect(),
-        //         )
-        //     })
-        //     // TODO: check that k is local
-        //     .filter(|(_k, v): &(types::Id, Vec<types::Id>)| !v.is_empty())
-        //     .collect();
         let output = types::Crate {
-            root: types::Id("0:0".to_string()),
+            root: types::Id(String::from("0:0")),
             version: krate.version.clone(),
             includes_private: cache.document_private,
             index: (*self.index).clone().into_inner(),
@@ -125,8 +144,6 @@ impl FormatRenderer for JsonRenderer {
                     )
                 })
                 .collect(),
-            // type_to_trait_impls,
-            // trait_to_implementors,
             external_crates: cache
                 .extern_locations
                 .iter()
