@@ -10,6 +10,11 @@ use crate::json::types::*;
 
 impl From<clean::Item> for Item {
     fn from(item: clean::Item) -> Self {
+<<<<<<< Updated upstream
+        let item_type = ItemType::from(&item);
+=======
+        let kind = ItemType::from(&item);
+>>>>>>> Stashed changes
         let clean::Item {
             source,
             name,
@@ -19,42 +24,59 @@ impl From<clean::Item> for Item {
             def_id,
             stability: _,
             deprecation,
-        } = item.clone();
-        // TODO: dont clone
+        } = item;
         Item {
             crate_num: def_id.krate.as_u32(),
             name,
             source: source.into(),
             visibility: visibility.into(),
             docs: attrs.collapsed_doc_value().unwrap_or_default(),
+            links: attrs.links.into_iter().map(|(a, b, c)| (a, b.map(Into::into), c)).collect(),
             attrs: attrs
                 .other_attrs
                 .iter()
                 .map(rustc_ast_pretty::pprust::attribute_to_string)
                 .collect(),
             deprecation: deprecation.map(Into::into),
-            kind: ItemType::from(&item).into(),
+<<<<<<< Updated upstream
+            kind: item_type.into(),
+=======
+            kind: kind.into(),
+>>>>>>> Stashed changes
             inner: inner.into(),
         }
     }
 }
 
-impl From<clean::Span> for Span {
+impl From<clean::Span> for Option<Span> {
     fn from(span: clean::Span) -> Self {
         let clean::Span { loline, locol, hiline, hicol, .. } = span;
-        Span {
-            filename: match span.filename {
-                rustc_span::FileName::Real(name) => Some(match name {
+<<<<<<< Updated upstream
+        match span.filename {
+            rustc_span::FileName::Real(name) => Some(Span {
+                filename: match name {
                     rustc_span::RealFileName::Named(path) => path,
                     rustc_span::RealFileName::Devirtualized { local_path, virtual_name: _ } => {
                         local_path
                     }
-                }),
-                _ => None,
-            },
-            begin: (loline, locol),
-            end: (hiline, hicol),
+                },
+                begin: (loline, locol),
+                end: (hiline, hicol),
+            }),
+            _ => None,
         }
+=======
+        let filename = match span.filename {
+            rustc_span::FileName::Real(name) => Some(match name {
+                rustc_span::RealFileName::Named(path) => path,
+                rustc_span::RealFileName::Devirtualized { local_path, virtual_name: _ } => {
+                    local_path
+                }
+            }),
+            _ => None,
+        };
+        filename.map(|filename| Span { filename, begin: (loline, locol), end: (hiline, hicol) })
+>>>>>>> Stashed changes
     }
 }
 
@@ -189,7 +211,7 @@ impl From<clean::Struct> for Struct {
             generics: generics.into(),
             fields_stripped,
             fields: fields.into_iter().map(|i| i.def_id.into()).collect(),
-            impls: Vec::new(), // TODO
+            impls: Vec::new(), // Added in JsonRenderer::insert
         }
     }
 }
@@ -202,7 +224,7 @@ impl From<clean::Union> for Struct {
             generics: generics.into(),
             fields_stripped,
             fields: fields.into_iter().map(|i| i.def_id.into()).collect(),
-            impls: Vec::new(), // TODO
+            impls: Vec::new(), // Added in JsonRenderer::insert
         }
     }
 }
@@ -331,7 +353,7 @@ impl From<clean::Type> for Type {
             Generic(s) => Type::Generic(s),
             Primitive(p) => Type::Primitive(p.as_str().to_string()),
             // TODO: check if there's a more idiomatic way of calling `into` on Box<T>
-            BareFunction(f) => Type::BareFunction(Box::new((*f).into())),
+            BareFunction(f) => Type::FunctionPointer(Box::new((*f).into())),
             Tuple(t) => Type::Tuple(t.into_iter().map(Into::into).collect()),
             Slice(t) => Type::Slice(Box::new((*t).into())),
             Array(t, s) => Type::Array { type_: Box::new((*t).into()), len: s },
@@ -356,10 +378,10 @@ impl From<clean::Type> for Type {
     }
 }
 
-impl From<clean::BareFunctionDecl> for BareFunctionDecl {
+impl From<clean::BareFunctionDecl> for FunctionPointer {
     fn from(bare_decl: clean::BareFunctionDecl) -> Self {
         let clean::BareFunctionDecl { unsafety, generic_params, decl, abi } = bare_decl;
-        BareFunctionDecl {
+        FunctionPointer {
             is_unsafe: unsafety == rustc_hir::Unsafety::Unsafe,
             generic_params: generic_params.into_iter().map(Into::into).collect(),
             decl: decl.into(),
@@ -392,7 +414,7 @@ impl From<clean::Trait> for Trait {
             items: items.into_iter().map(|i| i.def_id.into()).collect(),
             generics: generics.into(),
             bounds: bounds.into_iter().map(Into::into).collect(),
-            implementors: Vec::new(), // TODO
+            implementors: Vec::new(), // Added in JsonRenderer::insert
         }
     }
 }
@@ -456,7 +478,7 @@ impl From<clean::Enum> for Enum {
             generics: generics.into(),
             variants_stripped,
             variants: variants.into_iter().map(|i| i.def_id.into()).collect(),
-            impls: Vec::new(), // TODO
+            impls: Vec::new(), // Added in JsonRenderer::insert
         }
     }
 }
@@ -469,7 +491,7 @@ impl From<clean::VariantStruct> for Struct {
             generics: Default::default(),
             fields_stripped,
             fields: fields.into_iter().map(|i| i.def_id.into()).collect(),
-            impls: Vec::new(), // TODO
+            impls: Vec::new(),
         }
     }
 }

@@ -1,3 +1,8 @@
+//! Rustdoc's JSON output interface
+//!
+//! These types are the public API exposed through the `--output-format json` flag. The [`Crate`][]
+//! struct is the root of the JSON blob and all other items are contained within.
+
 use std::path::PathBuf;
 
 use rustc_data_structures::fx::FxHashMap;
@@ -8,16 +13,15 @@ use serde::Serialize;
 /// tools to find or link to them.
 #[derive(Clone, Debug, Serialize)]
 pub struct Crate {
-    /// The id of the root `Module` item of the local crate.
+    /// The id of the root [`Module`][] item of the local crate.
     pub root: Id,
     /// The version string given to `--crate-version`, if any.
     pub version: Option<String>,
     /// Whether or not the output includes private items.
     pub includes_private: bool,
-    /// A collection of all `Item`s in the local crate.
+    /// A collection of all items in the local crate as well as some external traits and their
+    /// items that are referenced locally.
     pub index: FxHashMap<Id, Item>,
-    /// A collection of external traits referenced by items in the local crate.
-    pub traits: FxHashMap<Id, Trait>,
     /// Maps ids to fully qualified paths (e.g. `["std", "io", "lazy", "Lazy"]` for
     /// `std::io::lazy::Lazy`) as well as their `ItemKind`
     pub paths: FxHashMap<Id, ItemSummary>,
@@ -40,11 +44,17 @@ pub struct ItemSummary {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Item {
+    /// This can be used as a key to the `external_crates` map of [`Crate`][] to see which crate
+    /// this item came from.
     pub crate_num: u32,
+    /// Some items such as impls don't have names.
     pub name: Option<String>,
-    pub source: Span,
+    /// The source location of this item. May not be present if it came from a macro expansion,
+    /// inline assembly, other "virtual" files
+    pub source: Option<Span>,
     pub visibility: Visibility,
     pub docs: String,
+    pub links: Vec<(String, Option<Id>, Option<String>)>,
     pub attrs: Vec<String>,
     pub deprecation: Option<Deprecation>,
     pub kind: ItemKind,
@@ -57,9 +67,8 @@ pub struct Item {
 
 #[derive(Clone, Debug, Serialize)]
 pub struct Span {
-    /// The path to the source file for this span relative to the crate root. May not be present if
-    /// the file came from a macro expansion, inline assembly, other "virtual" files
-    pub filename: Option<PathBuf>,
+    /// The path to the source file for this span relative to the crate root.
+    pub filename: PathBuf,
     /// Zero indexed Line and Column of the first character of the `Span`
     pub begin: (usize, usize),
     /// Zero indexed Line and Column of the last character of the `Span`
@@ -73,6 +82,7 @@ pub struct Deprecation {
 }
 
 #[serde(rename_all = "snake_case")]
+#[serde(tag = "visibility", content = "restricted_path")]
 #[derive(Clone, Debug, Serialize)]
 pub enum Visibility {
     Public,
@@ -226,6 +236,7 @@ pub struct Enum {
 }
 
 #[serde(rename_all = "snake_case")]
+#[serde(tag = "variant_kind", content = "inner")]
 #[derive(Clone, Debug, Serialize)]
 pub enum Variant {
     Plain,
@@ -310,21 +321,19 @@ pub enum TraitBoundModifier {
 #[serde(tag = "kind", content = "inner")]
 #[derive(Clone, Debug, Serialize)]
 pub enum Type {
-    /// Structs/enums/traits (most that would be an `hir::TyKind::Path`).
+    /// Structs, enums, and traits
     ResolvedPath {
         name: String,
         id: Id,
         args: Box<Option<GenericArgs>>,
         param_names: Vec<GenericBound>,
     },
-    /// For parameterized types, so the consumer of the JSON don't go
-    /// looking for types which don't exist anywhere.
+    /// Parameterized types
     Generic(String),
-    /// Primitives are the fixed-size numeric types (plus int/usize/float), char,
-    /// arrays, slices, and tuples.
+    /// Fixed-size numeric types (plus int/usize/float), char, arrays, slices, and tuples
     Primitive(String),
     /// `extern "ABI" fn`
-    BareFunction(Box<BareFunctionDecl>),
+    FunctionPointer(Box<FunctionPointer>),
     /// `(String, u32, Box<usize>)`
     Tuple(Vec<Type>),
     /// `[u32]`
@@ -364,7 +373,7 @@ pub enum Type {
 }
 
 #[derive(Clone, Debug, Serialize)]
-pub struct BareFunctionDecl {
+pub struct FunctionPointer {
     pub is_unsafe: bool,
     pub generic_params: Vec<GenericParamDef>,
     pub decl: FnDecl,
@@ -409,6 +418,9 @@ pub struct Impl {
     pub blanket_impl: Option<Type>,
 }
 
+// TODO: this is currently broken because imports have the same ID as the module that contains
+// them. The only obvious fix is to modify the clean types to renumber imports so that IDs are
+// actually unique.
 #[serde(rename_all = "snake_case")]
 #[derive(Clone, Debug, Serialize)]
 pub struct Import {
@@ -418,7 +430,7 @@ pub struct Import {
     /// `use source as name;`
     pub name: String,
     /// The ID of the item being imported.
-    pub id: Option<Id>, // TODO: does this need to be optional
+    pub id: Option<Id>, // TODO: when is this None?
     /// Whether this import uses a glob: `use source::*;`
     pub glob: bool,
 }

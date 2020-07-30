@@ -62,7 +62,7 @@ impl JsonRenderer {
             .map(|impls| {
                 impls
                     .iter()
-                    .map(|i| {
+                    .filter_map(|i| {
                         let item = &i.impl_item;
                         if item.def_id.is_local() {
                             self.insert(item.clone(), cache);
@@ -71,8 +71,6 @@ impl JsonRenderer {
                             None
                         }
                     })
-                    .filter(Option::is_some)
-                    .map(Option::unwrap)
                     .collect()
             })
             .unwrap_or_default()
@@ -93,7 +91,7 @@ impl FormatRenderer for JsonRenderer {
 
     fn item(&mut self, item: clean::Item, cache: &Cache) -> Result<(), Error> {
         use clean::ItemEnum::*;
-        // Flatten items that recursively store other items
+        // Flatten items that recursively store other items by putting their children in the index
         match item.inner.clone() {
             StructItem(s) => s.fields.into_iter().for_each(|i| self.insert(i, cache)),
             UnionItem(u) => u.fields.into_iter().for_each(|i| self.insert(i, cache)),
@@ -125,13 +123,52 @@ impl FormatRenderer for JsonRenderer {
 
     fn after_krate(&mut self, krate: &clean::Crate, cache: &Cache) -> Result<(), Error> {
         debug!("Done with crate");
+        let mut index = (*self.index).clone().into_inner();
+        let trait_items = cache.traits.iter().filter_map(|(id, trait_item)| {
+            // only need to synthesize items for external traits
+            if !id.is_local() {
+                debug!(
+                    "{:?}",
+                    trait_item
+                        .items
+                        .clone()
+                        .into_iter()
+                        .map(|i| types::Id::from(i.def_id))
+                        .collect::<Vec<_>>()
+                );
+                trait_item.items.clone().into_iter().for_each(|i| self.insert(i, cache));
+                Some((
+                    (*id).into(),
+                    types::Item {
+                        crate_num: id.krate.as_u32(),
+                        name: cache
+                            .paths
+                            .get(&id)
+                            .unwrap_or_else(|| {
+                                cache
+                                    .external_paths
+                                    .get(&id)
+                                    .expect("Trait should either be in local or external paths")
+                            })
+                            .0
+                            .last()
+                            .map(Clone::clone),
+                        visibility: types::Visibility::Public,
+                        kind: types::ItemKind::Trait,
+                        inner: types::ItemEnum::TraitItem(trait_item.clone().into()),
+                        ..Default::default()
+                    },
+                ))
+            } else {
+                None
+            }
+        });
+        index.extend(trait_items);
         let output = types::Crate {
             root: types::Id(String::from("0:0")),
             version: krate.version.clone(),
             includes_private: cache.document_private,
-            index: (*self.index).clone().into_inner(),
-            // traits: cache.traits.clone().into_iter().map(|(k, v)| (k.into(), v.into())).collect(),
-            traits: FxHashMap::default(),
+            index,
             paths: cache
                 .paths
                 .clone()
