@@ -2262,7 +2262,7 @@ impl Clean<Vec<Item>> for doctree::Import<'_> {
             name: None,
             attrs: self.attrs.clean(cx),
             source: self.whence.clean(cx),
-            def_id: DefId::local(CRATE_DEF_INDEX),
+            def_id: cx.tcx.hir().local_def_id(self.id).to_def_id(),
             visibility: self.vis.clean(cx),
             stability: None,
             deprecation: None,
