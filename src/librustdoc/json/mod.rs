@@ -12,7 +12,7 @@ use std::fs::File;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use rustc_data_structures::fx::FxHashMap;
+use rustc_data_structures::fx::{FxHashMap, FxHashSet};
 use rustc_span::edition::Edition;
 
 use crate::clean;
@@ -118,6 +118,65 @@ impl JsonRenderer {
     }
 }
 
+/// Visits everything in the crate to find all the item and crate IDs that get referenced
+fn reachable(krate: &types::Crate) -> (FxHashSet<types::Id>, FxHashSet<u32>) {
+    let mut seen_items = FxHashSet::default();
+    let mut seen_crates = FxHashSet::default();
+    reachable_visitor(&krate, &krate.root, &mut seen_items, &mut seen_crates);
+    return (seen_items, seen_crates);
+}
+
+fn reachable_visitor(
+    krate: &types::Crate,
+    id: &types::Id,
+    items: &mut FxHashSet<types::Id>,
+    crates: &mut FxHashSet<u32>,
+) {
+    items.insert(id.clone());
+    if let Some(item) = krate.index.get(id) {
+        if let types::Visibility::Restricted { parent, .. } = &item.visibility {
+            reachable_visitor(krate, parent, items, crates)
+        }
+        crates.insert(item.crate_id);
+        use types::ItemEnum::*;
+        match &item.inner {
+            ModuleItem(m) => {
+                m.items.iter().for_each(|id| reachable_visitor(krate, id, items, crates))
+            }
+            StructItem(s) => {
+                s.fields.iter().for_each(|id| reachable_visitor(krate, id, items, crates));
+                s.impls.iter().for_each(|id| reachable_visitor(krate, id, items, crates));
+            }
+            EnumItem(e) => {
+                e.variants.iter().for_each(|id| reachable_visitor(krate, id, items, crates));
+                e.impls.iter().for_each(|id| reachable_visitor(krate, id, items, crates));
+            }
+            VariantItem(v) => match v {
+                types::Variant::Struct(fields) => {
+                    fields.iter().for_each(|id| reachable_visitor(krate, id, items, crates))
+                }
+                _ => {}
+            },
+            TraitItem(t) => {
+                t.items.iter().for_each(|id| reachable_visitor(krate, id, items, crates));
+                t.implementors.iter().for_each(|id| reachable_visitor(krate, id, items, crates));
+            }
+            ImplItem(i) => {
+                i.items.iter().for_each(|id| reachable_visitor(krate, id, items, crates))
+            }
+            ImportItem(types::Import { id: Some(id), .. }) => {
+                reachable_visitor(krate, id, items, crates)
+            }
+            _ => {}
+        }
+    } else {
+        if let Some(_) = krate.paths.get(id) {
+        } else {
+            debug!("Item {} referenced but not present in json", id.0)
+        }
+    }
+}
+
 impl FormatRenderer for JsonRenderer {
     fn init(
         krate: clean::Crate,
@@ -189,7 +248,7 @@ impl FormatRenderer for JsonRenderer {
         debug!("Done with crate");
         let mut index = (*self.index).clone().into_inner();
         index.extend(self.get_trait_items(cache));
-        let output = types::Crate {
+        let mut output = types::Crate {
             root: types::Id(String::from("0:0")),
             version: krate.version.clone(),
             includes_private: cache.document_private,
@@ -224,6 +283,10 @@ impl FormatRenderer for JsonRenderer {
                 .collect(),
             format_version: 1,
         };
+        let (reachable_items, reachable_crates) = reachable(&output);
+        output.index.retain(|id, _| reachable_items.contains(id));
+        output.paths.retain(|id, _| reachable_items.contains(id));
+        output.external_crates.retain(|num, _| reachable_crates.contains(num));
         let mut p = self.out_path.clone();
         p.push(output.index.get(&output.root).unwrap().name.clone().unwrap());
         p.set_extension("json");
